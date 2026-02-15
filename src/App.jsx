@@ -83,8 +83,8 @@ function parseDXF(text) {
   for (const e of fallback) {
     const p = e.props;
     if (e.type === "LINE") {
-      [p.x1, p.x2].forEach(v => { if (v !== undefined) { minX = Math.min(minX, v); maxX = Math.max(maxX, v); }});
-      [p.y1, p.y2].forEach(v => { if (v !== undefined) { minY = Math.min(minY, v); maxY = Math.max(maxY, v); }});
+      [p.x1, p.x2].forEach(v => { if (v !== undefined) { minX = Math.min(minX, v); maxX = Math.max(maxX, v); } });
+      [p.y1, p.y2].forEach(v => { if (v !== undefined) { minY = Math.min(minY, v); maxY = Math.max(maxY, v); } });
     } else if (e.type === "ARC" && p.radius) {
       const cx = p.x1 || 0, cy = p.y1 || 0, r = p.radius;
       minX = Math.min(minX, cx - r); maxX = Math.max(maxX, cx + r);
@@ -110,48 +110,181 @@ function groupVals(values, tol) {
   return groups;
 }
 
-/* ── Layout Engine (centered on web) ── */
-function calcLayout(partW, partL, zHeight, moldWidth, maxIndex) {
-  const spacing = zHeight;
+/* ── Layout Engine (fixed edge margins at z/2, internal spacing varies) ── */
+function tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL) {
+  // Edge margins are FIXED at edgeMin (z/2) - they do not vary
+  const availableW = formW - 2 * edgeMin;
+  const availableL = formL - 2 * edgeMin;
+
+  // Web direction: fit parts with given spacing within available area
+  let across = spacing > 0 ? Math.floor((availableW + spacing) / (cW + spacing)) : Math.floor(availableW / cW);
+  while (across > 0) {
+    const needed = across * cW + (across - 1) * spacing;
+    if (needed <= availableW + 0.001) break;
+    across--;
+  }
+  if (across <= 0) return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW: spacing, actualSpacingL: spacing };
+
+  // Calculate actual internal spacing (distributes extra space to internal gaps, not edges)
+  const blockWMin = across * cW + (across - 1) * spacing;
+  const extraW = availableW - blockWMin;
+  const actualSpacingW = across > 1 ? spacing + extraW / (across - 1) : spacing;
+  const blockW = across * cW + (across - 1) * actualSpacingW;
+  const marginW = edgeMin; // FIXED at z/2
+  const moldPlateW = blockW + 2 * edgeMin;
+
+  // Index direction: fit rows with given spacing, round up to whole inch
+  let down = spacing > 0 ? Math.floor((availableL + spacing) / (cL + spacing)) : Math.floor(availableL / cL);
+  while (down > 0) {
+    const needed = down * cL + (down - 1) * spacing;
+    if (needed <= availableL + 0.001) break;
+    down--;
+  }
+  if (down <= 0) return { across: 0, down: 0, count: 0, marginW, marginL: 0, moldPlateW, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL: spacing };
+
+  const blockLMin = down * cL + (down - 1) * spacing;
+  const moldPlateL = blockLMin + 2 * edgeMin;
+  const usedIndex = Math.ceil(moldPlateL);
+  // Recalculate with actual usedIndex to distribute extra space to internal spacing
+  const actualAvailableL = usedIndex - 2 * edgeMin;
+  const extraL = actualAvailableL - blockLMin;
+  const actualSpacingL = down > 1 ? spacing + extraL / (down - 1) : spacing;
+  const marginL = edgeMin; // FIXED at z/2
+
+  const formingArea = formW * usedIndex;
+  const partsArea = across * down * cW * cL;
+  const utilization = formingArea > 0 ? (partsArea / formingArea) * 100 : 0;
+  return { across, down, count: across * down, marginW, marginL, moldPlateW, moldPlateL, usedIndex, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL, utilization };
+}
+
+function optimizeSpacing(cW, cL, zHeight, formW, formL) {
+  const edgeMin = zHeight / 2;
+  const minSpacing = zHeight * 0.75;
+  const maxSpacing = zHeight;
+  const steps = 26;
+
+  let bestResult = null;
+  // Sweep spacing from min to max and find the best utilization
+  for (let i = 0; i <= steps; i++) {
+    const spacing = zHeight > 0 ? minSpacing + (maxSpacing - minSpacing) * (i / steps) : 0;
+    const result = tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL);
+    if (result.count === 0) continue;
+    // Prefer: most cavities first, then best utilization, then smallest index
+    if (!bestResult ||
+      result.count > bestResult.count ||
+      (result.count === bestResult.count && result.utilization > bestResult.utilization) ||
+      (result.count === bestResult.count && Math.abs(result.utilization - bestResult.utilization) < 0.01 && result.usedIndex < bestResult.usedIndex)) {
+      bestResult = result;
+    }
+  }
+  if (!bestResult) {
+    return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing: maxSpacing, utilization: 0 };
+  }
+  return bestResult;
+}
+
+function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null) {
   const edgeMin = zHeight / 2;
   const formW = moldWidth, formL = maxIndex;
 
-  function tryFit(cW, cL) {
-    // Web direction: fit parts with exact z spacing and z/2 edges
-    let across = spacing > 0 ? Math.floor(formW / (cW + spacing)) : Math.floor(formW / cW);
-    while (across > 0) {
-      const needed = across * cW + (across - 1) * spacing + 2 * edgeMin;
-      if (needed <= formW + 0.001) break;
-      across--;
+  // If fixed spacing is provided, use it directly instead of optimizing
+  const getResult = (cW, cL) => {
+    if (fixedSpacing !== null) {
+      return tryFitWithSpacing(cW, cL, fixedSpacing, edgeMin, formW, formL);
     }
-    if (across <= 0) return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL };
-    const blockW = across * cW + (across - 1) * spacing;
-    const marginW = (formW - blockW) / 2; // center block on web
-    const moldPlateW = blockW + 2 * edgeMin; // minimum mold plate
+    return optimizeSpacing(cW, cL, zHeight, formW, formL);
+  };
 
-    // Index direction: fit rows with exact z spacing and z/2 ends, round up to whole inch
-    let down = spacing > 0 ? Math.floor(formL / (cL + spacing)) : Math.floor(formL / cL);
-    while (down > 0) {
-      const needed = down * cL + (down - 1) * spacing + 2 * edgeMin;
-      if (needed <= formL + 0.001) break;
-      down--;
+  const A = getResult(partW, partL);
+  const B = getResult(partL, partW);
+  const bestOri = A.count > B.count ? "A" : A.count < B.count ? "B" : (A.utilization >= B.utilization ? "A" : "B");
+
+  // Find optimal mold width suggestion across all standard widths (always use auto spacing for suggestions)
+  const suggestions = [];
+  for (const mw of MOLD_WIDTHS) {
+    const sA = optimizeSpacing(partW, partL, zHeight, mw, maxIndex);
+    const sB = optimizeSpacing(partL, partW, zHeight, mw, maxIndex);
+    const best = sA.count > sB.count ? sA : sA.count < sB.count ? sB : (sA.utilization >= sB.utilization ? sA : sB);
+    if (best.count > 0) {
+      suggestions.push({
+        moldWidth: mw,
+        ...best,
+        ori: sA.count > sB.count ? "A" : sA.count < sB.count ? "B" : (sA.utilization >= sB.utilization ? "A" : "B"),
+      });
     }
-    if (down <= 0) return { across: 0, down: 0, count: 0, marginW, marginL: 0, moldPlateW, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL };
-    const blockL = down * cL + (down - 1) * spacing;
-    const moldPlateL = blockL + 2 * edgeMin;
-    const usedIndex = Math.ceil(moldPlateL);
-    const marginL = (usedIndex - blockL) / 2; // center block in rounded index
-    return { across, down, count: across * down, marginW, marginL, moldPlateW, moldPlateL, usedIndex, cellW: cW, cellL: cL };
   }
-  const A = tryFit(partW, partL), B = tryFit(partL, partW);
-  return { orientationA: A, orientationB: B, best: A.count >= B.count ? "A" : "B", spacing, edgeMin, formW };
+  // Sort suggestions: best utilization first, then most cavities
+  suggestions.sort((a, b) => b.utilization - a.utilization || b.count - a.count);
+
+  const chosenOri = bestOri === "A" ? A : B;
+  return {
+    orientationA: A,
+    orientationB: B,
+    best: bestOri,
+    spacing: chosenOri.spacing,
+    edgeMin,
+    formW,
+    suggestions,
+    minSpacing: zHeight * 0.75,
+    maxSpacing: zHeight,
+    isManualSpacing: fixedSpacing !== null,
+  };
+}
+
+function calcLayout(partW, partL, zHeight, moldWidth, maxIndex) {
+  return calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, null);
+}
+
+/* ── Index Comparison Calculator ── */
+function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentIndex, densityLbIn3, gauge, costLb) {
+  const comparisons = [];
+  const totalSheetW = moldWidth + CHAIN_TOTAL;
+
+  // Calculate for various index lengths from current down to smallest that fits at least 1 row
+  const edgeMin = zHeight / 2;
+  const cellL = partL; // Use part length in index direction
+  const minIndex = Math.ceil(cellL + 2 * edgeMin); // Minimum index that can fit 1 row
+
+  // Show all viable indexes from max down to minimum (expanded range)
+  for (let idx = MAX_INDEX; idx >= minIndex; idx--) {
+    const A = optimizeSpacing(partW, partL, zHeight, moldWidth, idx);
+    const B = optimizeSpacing(partL, partW, zHeight, moldWidth, idx);
+    const best = A.count > B.count ? A : A.count < B.count ? B : (A.utilization >= B.utilization ? A : B);
+
+    if (best.count === 0) continue;
+
+    const formingArea = moldWidth * best.usedIndex;
+    const totalSheetArea = totalSheetW * best.usedIndex;
+    const partArea = best.cellW * best.cellL;
+    const totalPartsArea = best.count * partArea;
+    const sheetWeight = totalSheetArea * gauge * densityLbIn3;
+    const costPerPart = costLb > 0 && best.count > 0 ? (sheetWeight * costLb) / best.count : 0;
+
+    comparisons.push({
+      maxIndex: idx,
+      usedIndex: best.usedIndex,
+      count: best.count,
+      across: best.across,
+      down: best.down,
+      utilization: best.utilization,
+      sheetWeight,
+      costPerPart,
+      spacing: best.spacing,
+      isCurrent: idx === currentIndex,
+    });
+  }
+
+  return comparisons;
 }
 
 /* ── SVG Layout ── */
 function LayoutSVG({ layout, orientation, moldWidth, materialColor }) {
   const ori = orientation === "A" ? layout.orientationA : layout.orientationB;
-  const { across, down, cellW, cellL, usedIndex, marginW, marginL } = ori;
-  const { spacing, edgeMin } = layout;
+  const { across, down, cellW, cellL, usedIndex, marginW, marginL, actualSpacingW, actualSpacingL } = ori;
+  const { edgeMin } = layout;
+  // Use actual spacing (which includes distributed extra space) for positioning
+  const spacingW = actualSpacingW || ori.spacing;
+  const spacingL = actualSpacingL || ori.spacing;
   if (!across || !down) return <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>Part does not fit this configuration.</div>;
 
   const sheetW = moldWidth + CHAIN_TOTAL, sheetL = usedIndex;
@@ -164,7 +297,7 @@ function LayoutSVG({ layout, orientation, moldWidth, materialColor }) {
   const parts = [];
   for (let r = 0; r < down; r++)
     for (let c = 0; c < across; c++)
-      parts.push({ x: CHAIN_EACH + marginW + c * (cellW + spacing), y: marginL + r * (cellL + spacing), w: cellW, h: cellL, key: `${r}-${c}` });
+      parts.push({ x: CHAIN_EACH + marginW + c * (cellW + spacingW), y: marginL + r * (cellL + spacingL), w: cellW, h: cellL, key: `${r}-${c}` });
 
   return (
     <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: "block", maxHeight: 460 }}>
@@ -185,9 +318,9 @@ function LayoutSVG({ layout, orientation, moldWidth, materialColor }) {
         return <g><line x1={fl} y1={my - 6} x2={fl} y2={my + 6} stroke="#f59e0b" strokeWidth="0.5" /><line x1={pr} y1={my - 6} x2={pr} y2={my + 6} stroke="#f59e0b" strokeWidth="0.5" /><line x1={fl} y1={my} x2={pr} y2={my} stroke="#f59e0b" strokeWidth="0.8" strokeDasharray="2,2" /><text x={(fl + pr) / 2} y={my - 4} textAnchor="middle" fill="#f59e0b" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace">{marginW.toFixed(2)}"</text></g>;
       })()}
 
-      {across >= 2 && spacing * scale > 10 && (() => {
+      {across >= 2 && spacingW * scale > 10 && (() => {
         const r0 = ox + (parts[0].x + parts[0].w) * scale, l1 = ox + parts[1].x * scale, my = oy + (parts[0].y + parts[0].h * 0.5) * scale;
-        return <g><line x1={r0} y1={my - 5} x2={r0} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={l1} y1={my - 5} x2={l1} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={r0} y1={my} x2={l1} y2={my} stroke="#22d3ee" strokeWidth="0.8" strokeDasharray="2,2" /><text x={(r0 + l1) / 2} y={my - 4} textAnchor="middle" fill="#22d3ee" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace">{spacing.toFixed(2)}"</text></g>;
+        return <g><line x1={r0} y1={my - 5} x2={r0} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={l1} y1={my - 5} x2={l1} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={r0} y1={my} x2={l1} y2={my} stroke="#22d3ee" strokeWidth="0.8" strokeDasharray="2,2" /><text x={(r0 + l1) / 2} y={my - 4} textAnchor="middle" fill="#22d3ee" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace">{spacingW.toFixed(2)}"</text></g>;
       })()}
 
       {(() => { const dy = oy + sheetL * scale + 5 * scale, x1 = ox + CHAIN_EACH * scale, x2 = ox + (CHAIN_EACH + moldWidth) * scale; return <g><line x1={x1} y1={dy - 2 * scale} x2={x1} y2={dy + 1 * scale} stroke="#94a3b8" strokeWidth="0.5" /><line x1={x2} y1={dy - 2 * scale} x2={x2} y2={dy + 1 * scale} stroke="#94a3b8" strokeWidth="0.5" /><line x1={x1} y1={dy} x2={x2} y2={dy} stroke="#94a3b8" strokeWidth="0.8" /><text x={(x1 + x2) / 2} y={dy + 3 * scale} textAnchor="middle" fill="#cbd5e1" fontSize={fS} fontFamily="'DM Mono', monospace">{moldWidth}" web</text></g>; })()}
@@ -327,19 +460,62 @@ export default function App() {
   const [materialIdx, setMaterialIdx] = useState(0);
   const [gauge, setGauge] = useState(0.033);
   const [gaugeText, setGaugeText] = useState("0.033");
-  const [moldWidth, setMoldWidth] = useState(24);
+  const [moldWidth, setMoldWidth] = useState(26);
   const [selectedOri, setSelectedOri] = useState("best");
   const [costPerLb, setCostPerLb] = useState(MATERIALS[0].price.toString());
   const [dxfInfo, setDxfInfo] = useState(null);
   const [showInputs, setShowInputs] = useState(true);
+  const [showIndexCompare, setShowIndexCompare] = useState(false);
+  const [previewMaxIndex, setPreviewMaxIndex] = useState(null); // null = use default MAX_INDEX
+  const [spacingMode, setSpacingMode] = useState("auto"); // "auto" or "manual"
+  const [manualSpacing, setManualSpacing] = useState(null); // null = use auto, otherwise fixed value
   const fileRef = useRef();
   const isMobile = useIsMobile();
 
   const material = MATERIALS[materialIdx];
   const densityLbIn3 = material.density * GCC_TO_LBIN3;
-  const layout = useMemo(() => calcLayout(partW, partL, zHeight, moldWidth, MAX_INDEX), [partW, partL, zHeight, moldWidth]);
+
+  // Calculate default layout first to get the base usedIndex for comparisons
+  const defaultLayout = useMemo(() => calcLayout(partW, partL, zHeight, moldWidth, MAX_INDEX), [partW, partL, zHeight, moldWidth]);
+  const defaultOri = (selectedOri === "best" ? defaultLayout.best : selectedOri) === "A" ? defaultLayout.orientationA : defaultLayout.orientationB;
+
+  // Use preview index if set, otherwise use default
+  const effectiveMaxIndex = previewMaxIndex !== null ? previewMaxIndex : MAX_INDEX;
+  const effectiveSpacing = spacingMode === "manual" ? manualSpacing : null;
+  const layout = useMemo(
+    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing),
+    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing]
+  );
   const activeOri = selectedOri === "best" ? layout.best : selectedOri;
   const ori = activeOri === "A" ? layout.orientationA : layout.orientationB;
+
+  const costLb = parseFloat(costPerLb) || 0;
+  const indexComparisons = useMemo(
+    () => calcIndexComparisons(partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb),
+    [partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb]
+  );
+
+  // Reset preview and update manual spacing default when dimensions change
+  useEffect(() => {
+    setPreviewMaxIndex(null);
+  }, [partW, partL, zHeight, moldWidth]);
+
+  // Initialize manual spacing to auto value when switching to manual or when z-height changes
+  useEffect(() => {
+    if (spacingMode === "manual" && manualSpacing === null) {
+      setManualSpacing(defaultOri.spacing);
+    }
+  }, [spacingMode, manualSpacing, defaultOri.spacing]);
+
+  // Update manual spacing range when z-height changes
+  useEffect(() => {
+    if (manualSpacing !== null) {
+      const minS = zHeight * 0.5;
+      const maxS = zHeight * 1.5;
+      if (manualSpacing < minS) setManualSpacing(minS);
+      if (manualSpacing > maxS) setManualSpacing(maxS);
+    }
+  }, [zHeight, manualSpacing]);
 
   const formingArea = moldWidth * ori.usedIndex;
   const totalSheetW = moldWidth + CHAIN_TOTAL;
@@ -352,7 +528,6 @@ export default function App() {
   const partsWeight = totalPartsArea * gauge * densityLbIn3;
   const scrapWeight = sheetWeight - partsWeight;
   const hasCost = costPerLb !== "" && parseFloat(costPerLb) > 0;
-  const costLb = parseFloat(costPerLb) || 0;
   const sheetCost = hasCost ? sheetWeight * costLb : 0;
   const costPerPart = hasCost && ori.count > 0 ? sheetCost / ori.count : 0;
 
@@ -437,8 +612,64 @@ export default function App() {
               <IF label="Length" value={partL} onChange={setPartL} suffix='"' step={0.0625} min={0.25} />
               <IF label="Z-Height" value={zHeight} onChange={setZHeight} suffix='"' step={0.125} min={0} />
             </div>
+            <SL>Part Spacing</SL>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <button
+                onClick={() => { setSpacingMode("auto"); setManualSpacing(null); }}
+                style={{
+                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
+                  background: spacingMode === "auto" ? "#1e3a5f" : "#1e293b",
+                  border: `1px solid ${spacingMode === "auto" ? "#4EA8DE" : "#334155"}`,
+                  color: spacingMode === "auto" ? "#4EA8DE" : "#94a3b8",
+                  borderRadius: 4, cursor: "pointer"
+                }}>
+                Auto
+              </button>
+              <button
+                onClick={() => { setSpacingMode("manual"); if (manualSpacing === null) setManualSpacing(ori.spacing); }}
+                style={{
+                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
+                  background: spacingMode === "manual" ? "#1e3a5f" : "#1e293b",
+                  border: `1px solid ${spacingMode === "manual" ? "#4EA8DE" : "#334155"}`,
+                  color: spacingMode === "manual" ? "#4EA8DE" : "#94a3b8",
+                  borderRadius: 4, cursor: "pointer"
+                }}>
+                Manual
+              </button>
+            </div>
+            {spacingMode === "manual" && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <input
+                    type="range"
+                    min={zHeight * 0.5}
+                    max={zHeight * 1.5}
+                    step={0.001}
+                    value={manualSpacing || ori.spacing}
+                    onChange={(e) => setManualSpacing(parseFloat(e.target.value))}
+                    style={{ flex: 1, accentColor: "#4EA8DE" }}
+                  />
+                  <input
+                    type="number"
+                    value={(manualSpacing || ori.spacing).toFixed(3)}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v) && v >= 0) setManualSpacing(v);
+                    }}
+                    step={0.0625}
+                    min={0}
+                    style={{ ...inpS, width: 70, padding: "4px 6px", fontSize: 12, textAlign: "right" }}
+                  />
+                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>"</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
+                  <span>{(zHeight * 0.5).toFixed(3)}" (0.5z)</span>
+                  <span>{(zHeight * 1.5).toFixed(3)}" (1.5z)</span>
+                </div>
+              </div>
+            )}
             <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", margin: "2px 0 10px" }}>
-              Spacing: {zHeight.toFixed(3)}" | Edge/End: {(zHeight / 2).toFixed(3)}"
+              {spacingMode === "auto" ? "Auto" : "Manual"} | Web: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" | Index: {(ori.actualSpacingL || ori.spacing).toFixed(3)}" | Edge: {(zHeight / 2).toFixed(3)}" (fixed)
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
@@ -514,9 +745,14 @@ export default function App() {
           <CostSummary hasCost={hasCost} costLb={costLb} sheetWeight={sheetWeight} scrapWeight={scrapWeight} costPerPart={costPerPart} count={ori.count} />
 
           {/* Layout SVG */}
-          <div style={{ background: "#0c1222", border: "1px solid #1e293b", borderRadius: 8, padding: isMobile ? 8 : 12, marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>
-              {ori.across}×{ori.down} — {activeOri === "A" ? "as entered" : "rotated"} — centered on {moldWidth}" web
+          <div style={{ background: "#0c1222", border: previewMaxIndex !== null ? "1px solid #4EA8DE" : "1px solid #1e293b", borderRadius: 8, padding: isMobile ? 8 : 12, marginBottom: 10 }}>
+            <div style={{ fontSize: 10, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>{ori.across}×{ori.down} — {activeOri === "A" ? "as entered" : "rotated"} — centered on {moldWidth}" web</span>
+              {previewMaxIndex !== null && (
+                <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1e3a5f", color: "#4EA8DE", border: "1px solid #334155" }}>
+                  PREVIEW: {ori.usedIndex}" INDEX
+                </span>
+              )}
             </div>
             <LayoutSVG layout={layout} orientation={activeOri} moldWidth={moldWidth} materialColor={material.color} />
           </div>
@@ -528,8 +764,9 @@ export default function App() {
               <tbody>
                 <DR l="Part Cut Size" v={`${ori.cellW}" × ${ori.cellL}"`} />
                 <DR l="Z-Height" v={`${zHeight}"`} />
-                <DR l="Part Spacing" v={`${layout.spacing.toFixed(3)}" (z)`} />
-                <DR l="Edge / End Margin" v={`${layout.edgeMin.toFixed(3)}" (z/2)`} />
+                <DR l="Internal Spacing (Web)" v={`${(ori.actualSpacingW || ori.spacing).toFixed(3)}"`} />
+                <DR l="Internal Spacing (Index)" v={`${(ori.actualSpacingL || ori.spacing).toFixed(3)}"`} />
+                <DR l="Edge Margin" v={`${layout.edgeMin.toFixed(3)}" (z/2 fixed)`} />
                 <DR l="Min Mold Plate" v={`${ori.moldPlateW.toFixed(3)}" × ${ori.moldPlateL.toFixed(3)}"`} />
                 <DR l="Web (Mold Width)" v={`${moldWidth}"`} />
                 <DR l="Sheet Width (w/ Chains)" v={`${totalSheetW}"`} />
@@ -548,9 +785,133 @@ export default function App() {
             </table>
           </div>
 
+          {/* Index Comparison */}
+          {indexComparisons.length > 1 && (
+            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
+              <div
+                style={{ background: "#1e293b", padding: "6px 10px", fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  onClick={() => setShowIndexCompare(!showIndexCompare)}
+                  style={{ color: "#93c5fd", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+                  <span>{showIndexCompare ? "▼" : "▶"}</span>
+                  Compare Index Lengths
+                  <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1e3a5f", color: "#4EA8DE", border: "1px solid #334155" }}>
+                    {indexComparisons.length} OPTIONS
+                  </span>
+                </span>
+                {previewMaxIndex !== null && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setPreviewMaxIndex(null); }}
+                    style={{ fontSize: 8, fontWeight: 600, padding: "2px 6px", borderRadius: 3, background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", cursor: "pointer", fontFamily: "'DM Mono', monospace" }}>
+                    ✕ RESET
+                  </button>
+                )}
+              </div>
+              {showIndexCompare && (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Mono', monospace", fontSize: isMobile ? 10 : 10.5 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #1e293b" }}>
+                      <th style={{ padding: "5px 10px", textAlign: "left", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Index</th>
+                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Cavs</th>
+                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Layout</th>
+                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Sheet lb</th>
+                      <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Util %</th>
+                      {hasCost && <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>$/Part</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {indexComparisons.map((c, i) => {
+                      const isDefault = c.isCurrent;
+                      const isSelected = previewMaxIndex === c.maxIndex || (previewMaxIndex === null && isDefault);
+                      const isBest = i === 0 || c.utilization === indexComparisons[0].utilization;
+                      const cavDiff = c.count - indexComparisons[0].count;
+                      return (
+                        <tr key={c.maxIndex}
+                          onClick={() => setPreviewMaxIndex(isDefault && previewMaxIndex === null ? null : c.maxIndex)}
+                          style={{
+                            borderBottom: "1px solid #1e293b",
+                            background: isSelected ? "#1e3a5f44" : "transparent",
+                            cursor: "pointer",
+                          }}>
+                          <td style={{ padding: "5px 10px", color: isSelected ? "#93c5fd" : "#cbd5e1" }}>
+                            {c.usedIndex}"
+                            {isSelected && <span style={{ marginLeft: 4, fontSize: 8, color: "#4EA8DE", fontWeight: 700 }}>● VIEWING</span>}
+                            {!isSelected && isDefault && <span style={{ marginLeft: 4, fontSize: 8, color: "#64748b" }}>DEFAULT</span>}
+                          </td>
+                          <td style={{ padding: "5px 10px", textAlign: "center", color: isSelected ? "#e2e8f0" : "#cbd5e1", fontWeight: isSelected ? 600 : 400 }}>
+                            {c.count}
+                            {!isDefault && cavDiff !== 0 && (
+                              <span style={{ marginLeft: 3, fontSize: 9, color: cavDiff > 0 ? "#22c55e" : "#ef4444" }}>
+                                ({cavDiff > 0 ? "+" : ""}{cavDiff})
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ padding: "5px 10px", textAlign: "center", color: "#94a3b8" }}>{c.across}×{c.down}</td>
+                          <td style={{ padding: "5px 10px", textAlign: "center", color: "#94a3b8" }}>{c.sheetWeight.toFixed(3)}</td>
+                          <td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 600, color: c.utilization > 60 ? "#22c55e" : c.utilization > 40 ? "#eab308" : "#ef4444" }}>{c.utilization.toFixed(1)}%</td>
+                          {hasCost && (
+                            <td style={{ padding: "5px 10px", textAlign: "right", color: isBest && c.costPerPart <= indexComparisons[0].costPerPart ? "#22c55e" : "#cbd5e1" }}>
+                              ${c.costPerPart.toFixed(4)}
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Optimal Mold Suggestion */}
+          {layout.suggestions.length > 0 && (
+            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
+              <div style={{ background: "#1e293b", padding: "6px 10px", fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
+                Optimal Mold Width Suggestions
+                <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#064e3b", color: "#34d399", border: "1px solid #065f46" }}>AUTO</span>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Mono', monospace", fontSize: isMobile ? 10 : 10.5 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #1e293b" }}>
+                    <th style={{ padding: "5px 10px", textAlign: "left", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Web</th>
+                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Cavs</th>
+                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Spacing</th>
+                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Index</th>
+                    <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Util %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {layout.suggestions.map((s, i) => {
+                    const isCurrent = s.moldWidth === moldWidth;
+                    const isBest = i === 0;
+                    return (
+                      <tr key={s.moldWidth}
+                        onClick={() => setMoldWidth(s.moldWidth)}
+                        style={{
+                          borderBottom: "1px solid #1e293b",
+                          cursor: "pointer",
+                          background: isCurrent ? "#1e3a5f22" : "transparent",
+                        }}>
+                        <td style={{ padding: "5px 10px", color: isCurrent ? "#93c5fd" : "#cbd5e1" }}>
+                          {s.moldWidth}"
+                          {isBest && <span style={{ marginLeft: 4, fontSize: 8, color: "#22c55e", fontWeight: 700 }}>★ BEST</span>}
+                          {isCurrent && !isBest && <span style={{ marginLeft: 4, fontSize: 8, color: "#4EA8DE" }}>●</span>}
+                        </td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.count} ({s.across}×{s.down})</td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.spacing.toFixed(3)}"</td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.usedIndex}"</td>
+                        <td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 600, color: s.utilization > 60 ? "#22c55e" : s.utilization > 40 ? "#eab308" : "#ef4444" }}>{s.utilization.toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* Footer */}
           <div style={{ textAlign: "center", padding: "16px 0 8px", fontSize: 9, color: "#334155", fontFamily: "'DM Mono', monospace" }}>
-            Louis A. Nelson, Inc. — Thermoform Layout Optimizer v1.0
+            Louis A. Nelson, Inc. — Thermoform Layout Optimizer v2.3
           </div>
         </div>
       </div>
