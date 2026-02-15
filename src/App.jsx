@@ -183,14 +183,18 @@ function optimizeSpacing(cW, cL, zHeight, formW, formL) {
   return bestResult;
 }
 
-function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null) {
-  const edgeMin = zHeight / 2;
+function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null, fixedEdge = null) {
+  const edgeMin = fixedEdge !== null ? fixedEdge : zHeight / 2;
   const formW = moldWidth, formL = maxIndex;
 
   // If fixed spacing is provided, use it directly instead of optimizing
   const getResult = (cW, cL) => {
     if (fixedSpacing !== null) {
       return tryFitWithSpacing(cW, cL, fixedSpacing, edgeMin, formW, formL);
+    }
+    // Use custom edge in optimizeSpacing too
+    if (fixedEdge !== null) {
+      return tryFitWithSpacing(cW, cL, zHeight * 0.875, edgeMin, formW, formL); // Use mid-range spacing
     }
     return optimizeSpacing(cW, cL, zHeight, formW, formL);
   };
@@ -236,16 +240,14 @@ function calcLayout(partW, partL, zHeight, moldWidth, maxIndex) {
 }
 
 /* ── Index Comparison Calculator ── */
-function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentIndex, densityLbIn3, gauge, costLb) {
-  const comparisons = [];
+function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentUsedIndex, densityLbIn3, gauge, costLb) {
+  const rawComparisons = [];
   const totalSheetW = moldWidth + CHAIN_TOTAL;
-
-  // Calculate for various index lengths from current down to smallest that fits at least 1 row
   const edgeMin = zHeight / 2;
-  const cellL = partL; // Use part length in index direction
-  const minIndex = Math.ceil(cellL + 2 * edgeMin); // Minimum index that can fit 1 row
+  const cellL = Math.min(partL, partW); // Use smaller dimension
+  const minIndex = Math.ceil(cellL + 2 * edgeMin);
 
-  // Show all viable indexes from max down to minimum (expanded range)
+  // Calculate for all possible index lengths
   for (let idx = MAX_INDEX; idx >= minIndex; idx--) {
     const A = optimizeSpacing(partW, partL, zHeight, moldWidth, idx);
     const B = optimizeSpacing(partL, partW, zHeight, moldWidth, idx);
@@ -260,7 +262,7 @@ function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentIndex, de
     const sheetWeight = totalSheetArea * gauge * densityLbIn3;
     const costPerPart = costLb > 0 && best.count > 0 ? (sheetWeight * costLb) / best.count : 0;
 
-    comparisons.push({
+    rawComparisons.push({
       maxIndex: idx,
       usedIndex: best.usedIndex,
       count: best.count,
@@ -270,9 +272,18 @@ function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentIndex, de
       sheetWeight,
       costPerPart,
       spacing: best.spacing,
-      isCurrent: idx === currentIndex,
+      isCurrent: best.usedIndex === currentUsedIndex,
     });
   }
+
+  // Deduplicate by usedIndex - keep only unique configurations
+  const seen = new Set();
+  const comparisons = rawComparisons.filter(c => {
+    const key = `${c.usedIndex}-${c.count}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   return comparisons;
 }
@@ -469,6 +480,9 @@ export default function App() {
   const [previewMaxIndex, setPreviewMaxIndex] = useState(null); // null = use default MAX_INDEX
   const [spacingMode, setSpacingMode] = useState("auto"); // "auto" or "manual"
   const [manualSpacing, setManualSpacing] = useState(null); // null = use auto, otherwise fixed value
+  const [edgeMode, setEdgeMode] = useState("auto"); // "auto" or "manual"
+  const [manualEdge, setManualEdge] = useState(null); // null = use z/2, otherwise fixed value
+  const [manualIndex, setManualIndex] = useState(null); // null = use calculated, otherwise force this index
   const fileRef = useRef();
   const isMobile = useIsMobile();
 
@@ -480,11 +494,12 @@ export default function App() {
   const defaultOri = (selectedOri === "best" ? defaultLayout.best : selectedOri) === "A" ? defaultLayout.orientationA : defaultLayout.orientationB;
 
   // Use preview index if set, otherwise use default
-  const effectiveMaxIndex = previewMaxIndex !== null ? previewMaxIndex : MAX_INDEX;
+  const effectiveMaxIndex = manualIndex !== null ? manualIndex : (previewMaxIndex !== null ? previewMaxIndex : MAX_INDEX);
   const effectiveSpacing = spacingMode === "manual" ? manualSpacing : null;
+  const effectiveEdge = edgeMode === "manual" ? manualEdge : null;
   const layout = useMemo(
-    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing),
-    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing]
+    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge),
+    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge]
   );
   const activeOri = selectedOri === "best" ? layout.best : selectedOri;
   const ori = activeOri === "A" ? layout.orientationA : layout.orientationB;
@@ -495,27 +510,41 @@ export default function App() {
     [partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb]
   );
 
-  // Reset preview and update manual spacing default when dimensions change
+  // Reset preview when dimensions change
   useEffect(() => {
     setPreviewMaxIndex(null);
+    setManualIndex(null);
   }, [partW, partL, zHeight, moldWidth]);
 
-  // Initialize manual spacing to auto value when switching to manual or when z-height changes
+  // Initialize manual spacing to auto value when switching to manual
   useEffect(() => {
     if (spacingMode === "manual" && manualSpacing === null) {
       setManualSpacing(defaultOri.spacing);
     }
   }, [spacingMode, manualSpacing, defaultOri.spacing]);
 
-  // Update manual spacing range when z-height changes
+  // Initialize manual edge to z/2 when switching to manual
+  useEffect(() => {
+    if (edgeMode === "manual" && manualEdge === null) {
+      setManualEdge(zHeight / 2);
+    }
+  }, [edgeMode, manualEdge, zHeight]);
+
+  // Update manual values when z-height changes
   useEffect(() => {
     if (manualSpacing !== null) {
-      const minS = zHeight * 0.5;
-      const maxS = zHeight * 1.5;
+      const minS = zHeight * 0.25;
+      const maxS = zHeight * 2;
       if (manualSpacing < minS) setManualSpacing(minS);
       if (manualSpacing > maxS) setManualSpacing(maxS);
     }
-  }, [zHeight, manualSpacing]);
+    if (manualEdge !== null) {
+      const minE = zHeight * 0.25;
+      const maxE = zHeight * 1.5;
+      if (manualEdge < minE) setManualEdge(minE);
+      if (manualEdge > maxE) setManualEdge(maxE);
+    }
+  }, [zHeight, manualSpacing, manualEdge]);
 
   const formingArea = moldWidth * ori.usedIndex;
   const totalSheetW = moldWidth + CHAIN_TOTAL;
@@ -668,8 +697,95 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", margin: "2px 0 10px" }}>
-              {spacingMode === "auto" ? "Auto" : "Manual"} | Web: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" | Index: {(ori.actualSpacingL || ori.spacing).toFixed(3)}" | Edge: {(zHeight / 2).toFixed(3)}" (fixed)
+            <SL>Edge Margin</SL>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <button
+                onClick={() => { setEdgeMode("auto"); setManualEdge(null); }}
+                style={{
+                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
+                  background: edgeMode === "auto" ? "#1e3a5f" : "#1e293b",
+                  border: `1px solid ${edgeMode === "auto" ? "#4EA8DE" : "#334155"}`,
+                  color: edgeMode === "auto" ? "#4EA8DE" : "#94a3b8",
+                  borderRadius: 4, cursor: "pointer"
+                }}>
+                Auto (z/2)
+              </button>
+              <button
+                onClick={() => { setEdgeMode("manual"); if (manualEdge === null) setManualEdge(zHeight / 2); }}
+                style={{
+                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
+                  background: edgeMode === "manual" ? "#1e3a5f" : "#1e293b",
+                  border: `1px solid ${edgeMode === "manual" ? "#4EA8DE" : "#334155"}`,
+                  color: edgeMode === "manual" ? "#4EA8DE" : "#94a3b8",
+                  borderRadius: 4, cursor: "pointer"
+                }}>
+                Manual
+              </button>
+            </div>
+            {edgeMode === "manual" && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <input
+                    type="range"
+                    min={zHeight * 0.25}
+                    max={zHeight * 1.5}
+                    step={0.001}
+                    value={manualEdge || zHeight / 2}
+                    onChange={(e) => setManualEdge(parseFloat(e.target.value))}
+                    style={{ flex: 1, accentColor: "#f59e0b" }}
+                  />
+                  <input
+                    type="number"
+                    value={(manualEdge || zHeight / 2).toFixed(3)}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v) && v >= 0) setManualEdge(v);
+                    }}
+                    step={0.0625}
+                    min={0}
+                    style={{ ...inpS, width: 70, padding: "4px 6px", fontSize: 12, textAlign: "right" }}
+                  />
+                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>"</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
+                  <span>{(zHeight * 0.25).toFixed(3)}" (0.25z)</span>
+                  <span>{(zHeight * 1.5).toFixed(3)}" (1.5z)</span>
+                </div>
+              </div>
+            )}
+
+            <SL>Override Index</SL>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+              <input
+                type="number"
+                placeholder="Auto"
+                value={manualIndex || ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") setManualIndex(null);
+                  else {
+                    const n = parseInt(v);
+                    if (!isNaN(n) && n >= 5 && n <= MAX_INDEX) setManualIndex(n);
+                  }
+                }}
+                step={1}
+                min={5}
+                max={MAX_INDEX}
+                style={{ ...inpS, width: 70, padding: "6px 8px", fontSize: 13 }}
+              />
+              <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>" index</span>
+              {manualIndex !== null && (
+                <button
+                  onClick={() => setManualIndex(null)}
+                  style={{ fontSize: 9, padding: "4px 8px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 3, cursor: "pointer", fontFamily: "'DM Mono', monospace" }}>
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", marginBottom: 10, padding: "6px 8px", background: "#111827", borderRadius: 4, border: "1px solid #1e293b" }}>
+              <div>Spacing: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" web / {(ori.actualSpacingL || ori.spacing).toFixed(3)}" index</div>
+              <div>Edge: {layout.edgeMin.toFixed(3)}" {edgeMode === "auto" ? "(z/2)" : "(manual)"}</div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
@@ -911,7 +1027,7 @@ export default function App() {
 
           {/* Footer */}
           <div style={{ textAlign: "center", padding: "16px 0 8px", fontSize: 9, color: "#334155", fontFamily: "'DM Mono', monospace" }}>
-            Louis A. Nelson, Inc. — Thermoform Layout Optimizer v2.3
+            Louis A. Nelson, Inc. — Thermoform Layout Optimizer v2.4
           </div>
         </div>
       </div>
