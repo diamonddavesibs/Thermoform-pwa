@@ -13,7 +13,7 @@ const MATERIALS = [
   { name: "Polystyrene (GPPS)", density: 1.05, color: "#5390D9", price: 0.80 },
 ];
 
-const MOLD_WIDTHS = [18, 20, 22, 24, 26, 28, 30];
+const MOLD_WIDTHS = [20, 21, 22, 24, 25, 26, 28, 30];
 const COMMON_GAUGES = [0.010, 0.012, 0.015, 0.018, 0.020, 0.024, 0.030, 0.033, 0.040, 0.048, 0.060, 0.080, 0.100, 0.120];
 const MAX_INDEX = 36;
 const CHAIN_TOTAL = 1.5;
@@ -110,100 +110,88 @@ function groupVals(values, tol) {
   return groups;
 }
 
-/* ── Layout Engine (fixed edge margins at z/2, internal spacing varies) ── */
-function tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL) {
-  // Edge margins are FIXED at edgeMin (z/2) - they do not vary
+/* ── Layout Engine (spacing = 1x z-height, lesser spacing goes to edges) ── */
+function tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, forceAcross = null, forceDown = null) {
+  // Spacing is 1x z-height for both internal gaps and perimeter
+  // If there's extra space (uneven), the lesser value goes toward the outside edges
   const availableW = formW - 2 * edgeMin;
   const availableL = formL - 2 * edgeMin;
 
   // Web direction: fit parts with given spacing within available area
-  let across = spacing > 0 ? Math.floor((availableW + spacing) / (cW + spacing)) : Math.floor(availableW / cW);
-  while (across > 0) {
-    const needed = across * cW + (across - 1) * spacing;
-    if (needed <= availableW + 0.001) break;
-    across--;
+  let across = forceAcross !== null ? forceAcross : (spacing > 0 ? Math.floor((availableW + spacing) / (cW + spacing)) : Math.floor(availableW / cW));
+  if (forceAcross === null) {
+    while (across > 0) {
+      const needed = across * cW + (across - 1) * spacing;
+      if (needed <= availableW + 0.001) break;
+      across--;
+    }
   }
-  if (across <= 0) return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW: spacing, actualSpacingL: spacing };
+  if (across <= 0) return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW: spacing, actualSpacingL: spacing, edgeMarginW: edgeMin, edgeMarginL: edgeMin };
 
-  // Calculate actual internal spacing (distributes extra space to internal gaps, not edges)
-  const blockWMin = across * cW + (across - 1) * spacing;
-  const extraW = availableW - blockWMin;
-  const actualSpacingW = across > 1 ? spacing + extraW / (across - 1) : spacing;
-  const blockW = across * cW + (across - 1) * actualSpacingW;
-  const marginW = edgeMin; // FIXED at z/2
-  const moldPlateW = blockW + 2 * edgeMin;
+  // Calculate internal spacing and edge margins
+  // Internal spacing stays at exactly 'spacing' (1x z-height)
+  // Extra space goes to edges (lesser value toward outside)
+  const blockWWithInternalSpacing = across * cW + (across - 1) * spacing;
+  const extraW = availableW - blockWWithInternalSpacing;
+  const edgeMarginW = edgeMin + extraW / 2; // Extra space distributed to edges
+  const actualSpacingW = spacing; // Internal spacing stays fixed
+  const moldPlateW = blockWWithInternalSpacing + 2 * edgeMin;
 
   // Index direction: fit rows with given spacing, round up to whole inch
-  let down = spacing > 0 ? Math.floor((availableL + spacing) / (cL + spacing)) : Math.floor(availableL / cL);
-  while (down > 0) {
-    const needed = down * cL + (down - 1) * spacing;
-    if (needed <= availableL + 0.001) break;
-    down--;
+  let down = forceDown !== null ? forceDown : (spacing > 0 ? Math.floor((availableL + spacing) / (cL + spacing)) : Math.floor(availableL / cL));
+  if (forceDown === null) {
+    while (down > 0) {
+      const needed = down * cL + (down - 1) * spacing;
+      if (needed <= availableL + 0.001) break;
+      down--;
+    }
   }
-  if (down <= 0) return { across: 0, down: 0, count: 0, marginW, marginL: 0, moldPlateW, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL: spacing };
+  if (down <= 0) return { across: 0, down: 0, count: 0, marginW: edgeMarginW, marginL: 0, moldPlateW, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL: spacing, edgeMarginW, edgeMarginL: edgeMin };
 
-  const blockLMin = down * cL + (down - 1) * spacing;
-  const moldPlateL = blockLMin + 2 * edgeMin;
+  const blockLWithInternalSpacing = down * cL + (down - 1) * spacing;
+  const moldPlateL = blockLWithInternalSpacing + 2 * edgeMin;
   const usedIndex = Math.ceil(moldPlateL);
-  // Recalculate with actual usedIndex to distribute extra space to internal spacing
+
+  // Extra space in index direction also goes to edges
   const actualAvailableL = usedIndex - 2 * edgeMin;
-  const extraL = actualAvailableL - blockLMin;
-  const actualSpacingL = down > 1 ? spacing + extraL / (down - 1) : spacing;
-  const marginL = edgeMin; // FIXED at z/2
+  const extraL = actualAvailableL - blockLWithInternalSpacing;
+  const edgeMarginL = edgeMin + extraL / 2; // Extra space distributed to edges
+  const actualSpacingL = spacing; // Internal spacing stays fixed
 
   const formingArea = formW * usedIndex;
   const partsArea = across * down * cW * cL;
   const utilization = formingArea > 0 ? (partsArea / formingArea) * 100 : 0;
-  return { across, down, count: across * down, marginW, marginL, moldPlateW, moldPlateL, usedIndex, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL, utilization };
+  return { across, down, count: across * down, marginW: edgeMarginW, marginL: edgeMarginL, moldPlateW, moldPlateL, usedIndex, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL, utilization, edgeMarginW, edgeMarginL };
 }
 
-function optimizeSpacing(cW, cL, zHeight, formW, formL) {
-  const edgeMin = zHeight / 2;
-  const minSpacing = zHeight * 0.75;
-  const maxSpacing = zHeight;
-  const steps = 26;
+function optimizeSpacing(cW, cL, zHeight, formW, formL, forceAcross = null, forceDown = null) {
+  // Spacing is always 1x z-height
+  const edgeMin = zHeight; // Edge margin = 1x z-height
+  const spacing = zHeight; // Internal spacing = 1x z-height
 
-  let bestResult = null;
-  // Sweep spacing from min to max and find the best utilization
-  for (let i = 0; i <= steps; i++) {
-    const spacing = zHeight > 0 ? minSpacing + (maxSpacing - minSpacing) * (i / steps) : 0;
-    const result = tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL);
-    if (result.count === 0) continue;
-    // Prefer: most cavities first, then best utilization, then smallest index
-    if (!bestResult ||
-      result.count > bestResult.count ||
-      (result.count === bestResult.count && result.utilization > bestResult.utilization) ||
-      (result.count === bestResult.count && Math.abs(result.utilization - bestResult.utilization) < 0.01 && result.usedIndex < bestResult.usedIndex)) {
-      bestResult = result;
-    }
+  const result = tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, forceAcross, forceDown);
+  if (result.count === 0) {
+    return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, utilization: 0, edgeMarginW: edgeMin, edgeMarginL: edgeMin };
   }
-  if (!bestResult) {
-    return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing: maxSpacing, utilization: 0 };
-  }
-  return bestResult;
+  return result;
 }
 
-function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null, fixedEdge = null) {
-  const edgeMin = fixedEdge !== null ? fixedEdge : zHeight / 2;
+function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null, fixedEdge = null, forceAcross = null, forceDown = null) {
+  // Default: spacing = 1x z-height, edge margin = 1x z-height
+  const edgeMin = fixedEdge !== null ? fixedEdge : zHeight;
+  const spacing = fixedSpacing !== null ? fixedSpacing : zHeight;
   const formW = moldWidth, formL = maxIndex;
 
-  // If fixed spacing is provided, use it directly instead of optimizing
-  const getResult = (cW, cL) => {
-    if (fixedSpacing !== null) {
-      return tryFitWithSpacing(cW, cL, fixedSpacing, edgeMin, formW, formL);
-    }
-    // Use custom edge in optimizeSpacing too
-    if (fixedEdge !== null) {
-      return tryFitWithSpacing(cW, cL, zHeight * 0.875, edgeMin, formW, formL); // Use mid-range spacing
-    }
-    return optimizeSpacing(cW, cL, zHeight, formW, formL);
+  // Get result for each orientation
+  const getResult = (cW, cL, fAcross, fDown) => {
+    return tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, fAcross, fDown);
   };
 
-  const A = getResult(partW, partL);
-  const B = getResult(partL, partW);
+  const A = getResult(partW, partL, forceAcross, forceDown);
+  const B = getResult(partL, partW, forceAcross, forceDown);
   const bestOri = A.count > B.count ? "A" : A.count < B.count ? "B" : (A.utilization >= B.utilization ? "A" : "B");
 
-  // Find optimal mold width suggestion across all standard widths (always use auto spacing for suggestions)
+  // Find optimal mold width suggestion across all standard widths
   const suggestions = [];
   for (const mw of MOLD_WIDTHS) {
     const sA = optimizeSpacing(partW, partL, zHeight, mw, maxIndex);
@@ -229,7 +217,7 @@ function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixed
     edgeMin,
     formW,
     suggestions,
-    minSpacing: zHeight * 0.75,
+    minSpacing: zHeight,
     maxSpacing: zHeight,
     isManualSpacing: fixedSpacing !== null,
   };
@@ -243,7 +231,7 @@ function calcLayout(partW, partL, zHeight, moldWidth, maxIndex) {
 function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentUsedIndex, densityLbIn3, gauge, costLb) {
   const rawComparisons = [];
   const totalSheetW = moldWidth + CHAIN_TOTAL;
-  const edgeMin = zHeight / 2;
+  const edgeMin = zHeight; // Edge margin = 1x z-height
   const cellL = Math.min(partL, partW); // Use smaller dimension
   const minIndex = Math.ceil(cellL + 2 * edgeMin);
 
@@ -291,11 +279,13 @@ function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentUsedIndex
 /* ── SVG Layout ── */
 function LayoutSVG({ layout, orientation, moldWidth, materialColor }) {
   const ori = orientation === "A" ? layout.orientationA : layout.orientationB;
-  const { across, down, cellW, cellL, usedIndex, marginW, marginL, actualSpacingW, actualSpacingL } = ori;
+  const { across, down, cellW, cellL, usedIndex, edgeMarginW, edgeMarginL, actualSpacingW, actualSpacingL } = ori;
   const { edgeMin } = layout;
-  // Use actual spacing (which includes distributed extra space) for positioning
+  // Use actual spacing for internal gaps, edge margins include any extra space
   const spacingW = actualSpacingW || ori.spacing;
   const spacingL = actualSpacingL || ori.spacing;
+  const marginW = edgeMarginW || edgeMin;
+  const marginL = edgeMarginL || edgeMin;
   if (!across || !down) return <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>Part does not fit this configuration.</div>;
 
   const sheetW = moldWidth + CHAIN_TOTAL, sheetL = usedIndex;
@@ -483,6 +473,9 @@ export default function App() {
   const [edgeMode, setEdgeMode] = useState("auto"); // "auto" or "manual"
   const [manualEdge, setManualEdge] = useState(null); // null = use z/2, otherwise fixed value
   const [manualIndex, setManualIndex] = useState(null); // null = use calculated, otherwise force this index
+  const [manualIndexText, setManualIndexText] = useState(""); // For input bug fix - store raw text
+  const [forceAcross, setForceAcross] = useState(null); // null = auto, otherwise force this many across
+  const [forceDown, setForceDown] = useState(null); // null = auto, otherwise force this many down
   const fileRef = useRef();
   const isMobile = useIsMobile();
 
@@ -498,8 +491,8 @@ export default function App() {
   const effectiveSpacing = spacingMode === "manual" ? manualSpacing : null;
   const effectiveEdge = edgeMode === "manual" ? manualEdge : null;
   const layout = useMemo(
-    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge),
-    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge]
+    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge, forceAcross, forceDown),
+    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge, forceAcross, forceDown]
   );
   const activeOri = selectedOri === "best" ? layout.best : selectedOri;
   const ori = activeOri === "A" ? layout.orientationA : layout.orientationB;
@@ -514,33 +507,36 @@ export default function App() {
   useEffect(() => {
     setPreviewMaxIndex(null);
     setManualIndex(null);
+    setManualIndexText("");
+    setForceAcross(null);
+    setForceDown(null);
   }, [partW, partL, zHeight, moldWidth]);
 
-  // Initialize manual spacing to auto value when switching to manual
+  // Initialize manual spacing to auto value (1x z-height) when switching to manual
   useEffect(() => {
     if (spacingMode === "manual" && manualSpacing === null) {
-      setManualSpacing(defaultOri.spacing);
+      setManualSpacing(zHeight);
     }
-  }, [spacingMode, manualSpacing, defaultOri.spacing]);
+  }, [spacingMode, manualSpacing, zHeight]);
 
-  // Initialize manual edge to z/2 when switching to manual
+  // Initialize manual edge to 1x z-height when switching to manual
   useEffect(() => {
     if (edgeMode === "manual" && manualEdge === null) {
-      setManualEdge(zHeight / 2);
+      setManualEdge(zHeight);
     }
   }, [edgeMode, manualEdge, zHeight]);
 
   // Update manual values when z-height changes
   useEffect(() => {
     if (manualSpacing !== null) {
-      const minS = zHeight * 0.25;
+      const minS = zHeight * 0.5;
       const maxS = zHeight * 2;
       if (manualSpacing < minS) setManualSpacing(minS);
       if (manualSpacing > maxS) setManualSpacing(maxS);
     }
     if (manualEdge !== null) {
-      const minE = zHeight * 0.25;
-      const maxE = zHeight * 1.5;
+      const minE = zHeight * 0.5;
+      const maxE = zHeight * 2;
       if (manualEdge < minE) setManualEdge(minE);
       if (manualEdge > maxE) setManualEdge(maxE);
     }
@@ -672,15 +668,15 @@ export default function App() {
                   <input
                     type="range"
                     min={zHeight * 0.5}
-                    max={zHeight * 1.5}
+                    max={zHeight * 2}
                     step={0.001}
-                    value={manualSpacing || ori.spacing}
+                    value={manualSpacing || zHeight}
                     onChange={(e) => setManualSpacing(parseFloat(e.target.value))}
                     style={{ flex: 1, accentColor: "#4EA8DE" }}
                   />
                   <input
                     type="number"
-                    value={(manualSpacing || ori.spacing).toFixed(3)}
+                    value={(manualSpacing || zHeight).toFixed(3)}
                     onChange={(e) => {
                       const v = parseFloat(e.target.value);
                       if (!isNaN(v) && v >= 0) setManualSpacing(v);
@@ -693,7 +689,8 @@ export default function App() {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
                   <span>{(zHeight * 0.5).toFixed(3)}" (0.5z)</span>
-                  <span>{(zHeight * 1.5).toFixed(3)}" (1.5z)</span>
+                  <span>{zHeight.toFixed(3)}" (1z default)</span>
+                  <span>{(zHeight * 2).toFixed(3)}" (2z)</span>
                 </div>
               </div>
             )}
@@ -708,10 +705,10 @@ export default function App() {
                   color: edgeMode === "auto" ? "#4EA8DE" : "#94a3b8",
                   borderRadius: 4, cursor: "pointer"
                 }}>
-                Auto (z/2)
+                Auto (1x z)
               </button>
               <button
-                onClick={() => { setEdgeMode("manual"); if (manualEdge === null) setManualEdge(zHeight / 2); }}
+                onClick={() => { setEdgeMode("manual"); if (manualEdge === null) setManualEdge(zHeight); }}
                 style={{
                   flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
                   background: edgeMode === "manual" ? "#1e3a5f" : "#1e293b",
@@ -727,16 +724,16 @@ export default function App() {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <input
                     type="range"
-                    min={zHeight * 0.25}
-                    max={zHeight * 1.5}
+                    min={zHeight * 0.5}
+                    max={zHeight * 2}
                     step={0.001}
-                    value={manualEdge || zHeight / 2}
+                    value={manualEdge || zHeight}
                     onChange={(e) => setManualEdge(parseFloat(e.target.value))}
                     style={{ flex: 1, accentColor: "#f59e0b" }}
                   />
                   <input
                     type="number"
-                    value={(manualEdge || zHeight / 2).toFixed(3)}
+                    value={(manualEdge || zHeight).toFixed(3)}
                     onChange={(e) => {
                       const v = parseFloat(e.target.value);
                       if (!isNaN(v) && v >= 0) setManualEdge(v);
@@ -748,8 +745,9 @@ export default function App() {
                   <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>"</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
-                  <span>{(zHeight * 0.25).toFixed(3)}" (0.25z)</span>
-                  <span>{(zHeight * 1.5).toFixed(3)}" (1.5z)</span>
+                  <span>{(zHeight * 0.5).toFixed(3)}" (0.5z)</span>
+                  <span>{zHeight.toFixed(3)}" (1z default)</span>
+                  <span>{(zHeight * 2).toFixed(3)}" (2z)</span>
                 </div>
               </div>
             )}
@@ -757,35 +755,124 @@ export default function App() {
             <SL>Override Index</SL>
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
               <input
-                type="number"
+                type="text"
+                inputMode="numeric"
                 placeholder="Auto"
-                value={manualIndex || ""}
+                value={manualIndexText}
                 onChange={(e) => {
                   const v = e.target.value;
-                  if (v === "") setManualIndex(null);
-                  else {
+                  setManualIndexText(v);
+                  if (v === "") {
+                    setManualIndex(null);
+                  } else {
                     const n = parseInt(v);
-                    if (!isNaN(n) && n >= 5 && n <= MAX_INDEX) setManualIndex(n);
+                    if (!isNaN(n) && n >= 1 && n <= MAX_INDEX) {
+                      setManualIndex(n);
+                    }
                   }
                 }}
-                step={1}
-                min={5}
-                max={MAX_INDEX}
+                onBlur={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setManualIndex(null);
+                    setManualIndexText("");
+                  } else {
+                    const n = parseInt(v);
+                    if (!isNaN(n) && n >= 5 && n <= MAX_INDEX) {
+                      setManualIndex(n);
+                      setManualIndexText(n.toString());
+                    } else if (!isNaN(n) && n < 5) {
+                      setManualIndex(5);
+                      setManualIndexText("5");
+                    } else if (!isNaN(n) && n > MAX_INDEX) {
+                      setManualIndex(MAX_INDEX);
+                      setManualIndexText(MAX_INDEX.toString());
+                    } else {
+                      setManualIndex(null);
+                      setManualIndexText("");
+                    }
+                  }
+                }}
                 style={{ ...inpS, width: 70, padding: "6px 8px", fontSize: 13 }}
               />
               <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>" index</span>
               {manualIndex !== null && (
                 <button
-                  onClick={() => setManualIndex(null)}
+                  onClick={() => { setManualIndex(null); setManualIndexText(""); }}
                   style={{ fontSize: 9, padding: "4px 8px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 3, cursor: "pointer", fontFamily: "'DM Mono', monospace" }}>
                   Clear
                 </button>
               )}
             </div>
 
+            <SL>Override Quantity</SL>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>Across (web)</div>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    type="number"
+                    placeholder="Auto"
+                    value={forceAcross || ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "") setForceAcross(null);
+                      else {
+                        const n = parseInt(v);
+                        if (!isNaN(n) && n >= 1) setForceAcross(n);
+                      }
+                    }}
+                    step={1}
+                    min={1}
+                    style={{ ...inpS, width: 60, padding: "4px 6px", fontSize: 12 }}
+                  />
+                  {forceAcross !== null && (
+                    <button
+                      onClick={() => setForceAcross(null)}
+                      style={{ fontSize: 8, padding: "2px 4px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 2, cursor: "pointer" }}>
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>Down (index)</div>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    type="number"
+                    placeholder="Auto"
+                    value={forceDown || ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "") setForceDown(null);
+                      else {
+                        const n = parseInt(v);
+                        if (!isNaN(n) && n >= 1) setForceDown(n);
+                      }
+                    }}
+                    step={1}
+                    min={1}
+                    style={{ ...inpS, width: 60, padding: "4px 6px", fontSize: 12 }}
+                  />
+                  {forceDown !== null && (
+                    <button
+                      onClick={() => setForceDown(null)}
+                      style={{ fontSize: 8, padding: "2px 4px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 2, cursor: "pointer" }}>
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+            {(forceAcross !== null || forceDown !== null) && (
+              <div style={{ fontSize: 9, color: "#f59e0b", fontFamily: "'DM Mono', monospace", marginBottom: 10, padding: "4px 8px", background: "#422006", borderRadius: 4, border: "1px solid #854d0e" }}>
+                Quantities overridden — spacing distributed to edges
+              </div>
+            )}
+
             <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", marginBottom: 10, padding: "6px 8px", background: "#111827", borderRadius: 4, border: "1px solid #1e293b" }}>
-              <div>Spacing: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" web / {(ori.actualSpacingL || ori.spacing).toFixed(3)}" index</div>
-              <div>Edge: {layout.edgeMin.toFixed(3)}" {edgeMode === "auto" ? "(z/2)" : "(manual)"}</div>
+              <div>Internal Spacing: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" (1x z)</div>
+              <div>Edge Margin: {(ori.edgeMarginW || layout.edgeMin).toFixed(3)}" web / {(ori.edgeMarginL || layout.edgeMin).toFixed(3)}" index {edgeMode === "auto" ? "(1x z + extra)" : "(manual)"}</div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
@@ -810,13 +897,14 @@ export default function App() {
             </div>
 
             <SL>Mold Width (Web)</SL>
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
+            <select
+              value={moldWidth}
+              onChange={e => setMoldWidth(parseInt(e.target.value))}
+              style={{ ...selS, marginBottom: 10 }}>
               {MOLD_WIDTHS.map(w => (
-                <button key={w} onClick={() => setMoldWidth(w)} style={{ padding: "6px 10px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: moldWidth === w ? "#1e3a5f" : "#1e293b", border: `1px solid ${moldWidth === w ? "#4EA8DE" : "#334155"}`, color: moldWidth === w ? "#4EA8DE" : "#94a3b8", borderRadius: 4, cursor: "pointer" }}>
-                  {w}"
-                </button>
+                <option key={w} value={w}>{w}"</option>
               ))}
-            </div>
+            </select>
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
               <div>
@@ -880,9 +968,9 @@ export default function App() {
               <tbody>
                 <DR l="Part Cut Size" v={`${ori.cellW}" × ${ori.cellL}"`} />
                 <DR l="Z-Height" v={`${zHeight}"`} />
-                <DR l="Internal Spacing (Web)" v={`${(ori.actualSpacingW || ori.spacing).toFixed(3)}"`} />
-                <DR l="Internal Spacing (Index)" v={`${(ori.actualSpacingL || ori.spacing).toFixed(3)}"`} />
-                <DR l="Edge Margin" v={`${layout.edgeMin.toFixed(3)}" (z/2 fixed)`} />
+                <DR l="Internal Spacing" v={`${(ori.actualSpacingW || ori.spacing).toFixed(3)}" (1x z)`} />
+                <DR l="Edge Margin (Web)" v={`${(ori.edgeMarginW || layout.edgeMin).toFixed(3)}"`} />
+                <DR l="Edge Margin (Index)" v={`${(ori.edgeMarginL || layout.edgeMin).toFixed(3)}"`} />
                 <DR l="Min Mold Plate" v={`${ori.moldPlateW.toFixed(3)}" × ${ori.moldPlateL.toFixed(3)}"`} />
                 <DR l="Web (Mold Width)" v={`${moldWidth}"`} />
                 <DR l="Sheet Width (w/ Chains)" v={`${totalSheetW}"`} />
