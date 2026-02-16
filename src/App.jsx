@@ -570,6 +570,156 @@ export default function App() {
     e.target.value = "";
   };
 
+  // Export to CSV
+  const exportToCSV = () => {
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+    const rows = [
+      ["Thermoform Layout Report", timestamp],
+      [],
+      ["Part Dimensions"],
+      ["Width", ori.cellW, "in"],
+      ["Length", ori.cellL, "in"],
+      ["Z-Height", zHeight, "in"],
+      [],
+      ["Layout Configuration"],
+      ["Mold Width (Web)", moldWidth, "in"],
+      ["Index Length", ori.usedIndex, "in"],
+      ["Cavities", ori.count],
+      ["Layout", `${ori.across} x ${ori.down}`],
+      ["Orientation", activeOri === "A" ? "As Entered" : "Rotated 90°"],
+      [],
+      ["Spacing"],
+      ["Internal Spacing", (ori.actualSpacingW || ori.spacing).toFixed(3), "in"],
+      ["Edge Margin (Web)", (ori.edgeMarginW || layout.edgeMin).toFixed(3), "in"],
+      ["Edge Margin (Index)", (ori.edgeMarginL || layout.edgeMin).toFixed(3), "in"],
+      [],
+      ["Material"],
+      ["Type", material.name],
+      ["Density", material.density, "g/cc"],
+      ["Gauge", gauge, "in"],
+      [],
+      ["Area & Weight"],
+      ["Forming Area", formingArea.toFixed(2), "sq in"],
+      ["Total Parts Area", totalPartsArea.toFixed(2), "sq in"],
+      ["Scrap Area", scrapArea.toFixed(2), "sq in"],
+      ["Utilization", utilization.toFixed(1), "%"],
+      ["Sheet Weight", sheetWeight.toFixed(4), "lbs"],
+      ["Parts Weight", partsWeight.toFixed(4), "lbs"],
+      ["Scrap Weight", scrapWeight.toFixed(4), "lbs"],
+    ];
+    if (hasCost) {
+      rows.push([], ["Cost Analysis"]);
+      rows.push(["Material $/lb", costLb.toFixed(2)]);
+      rows.push(["Sheet Cost", "$" + sheetCost.toFixed(4)]);
+      rows.push(["Cost per Part", "$" + costPerPart.toFixed(4)]);
+    }
+    const csv = rows.map(r => r.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `thermoform-layout-${timestamp}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Print layout
+  const handlePrint = () => {
+    const printContent = `
+      <html>
+      <head>
+        <title>Thermoform Layout Report</title>
+        <style>
+          body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; color: #333; }
+          h1 { font-size: 18px; margin-bottom: 5px; }
+          h2 { font-size: 14px; color: #666; margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+          .subtitle { font-size: 11px; color: #888; margin-bottom: 20px; }
+          table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+          td { padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #eee; }
+          td:first-child { color: #666; width: 180px; }
+          td:last-child { font-weight: 500; }
+          .highlight { background: #f0f9ff; }
+          .section { margin-bottom: 20px; }
+          @media print { body { padding: 0; } }
+        </style>
+      </head>
+      <body>
+        <h1>Thermoform Layout Report</h1>
+        <div class="subtitle">Generated: ${new Date().toLocaleString()}</div>
+
+        <div class="section">
+          <h2>Part Dimensions</h2>
+          <table>
+            <tr><td>Part Cut Size</td><td>${ori.cellW}" × ${ori.cellL}"</td></tr>
+            <tr><td>Z-Height</td><td>${zHeight}"</td></tr>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Layout Configuration</h2>
+          <table>
+            <tr class="highlight"><td>Cavities</td><td>${ori.count} (${ori.across} × ${ori.down})</td></tr>
+            <tr><td>Mold Width (Web)</td><td>${moldWidth}"</td></tr>
+            <tr><td>Index Length</td><td>${ori.usedIndex}"</td></tr>
+            <tr><td>Orientation</td><td>${activeOri === "A" ? "As Entered" : "Rotated 90°"}</td></tr>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Spacing</h2>
+          <table>
+            <tr><td>Internal Spacing</td><td>${(ori.actualSpacingW || ori.spacing).toFixed(3)}"</td></tr>
+            <tr><td>Edge Margin (Web)</td><td>${(ori.edgeMarginW || layout.edgeMin).toFixed(3)}"</td></tr>
+            <tr><td>Edge Margin (Index)</td><td>${(ori.edgeMarginL || layout.edgeMin).toFixed(3)}"</td></tr>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Material</h2>
+          <table>
+            <tr><td>Type</td><td>${material.name}</td></tr>
+            <tr><td>Density</td><td>${material.density} g/cc</td></tr>
+            <tr><td>Gauge</td><td>${gauge}"</td></tr>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Area & Weight</h2>
+          <table>
+            <tr><td>Forming Area</td><td>${formingArea.toFixed(2)} sq in</td></tr>
+            <tr><td>Total Parts Area</td><td>${totalPartsArea.toFixed(2)} sq in</td></tr>
+            <tr><td>Scrap Area</td><td>${scrapArea.toFixed(2)} sq in</td></tr>
+            <tr class="highlight"><td>Utilization</td><td>${utilization.toFixed(1)}%</td></tr>
+            <tr><td>Sheet Weight</td><td>${sheetWeight.toFixed(4)} lbs</td></tr>
+            <tr><td>Parts Weight</td><td>${partsWeight.toFixed(4)} lbs</td></tr>
+            <tr><td>Scrap Weight</td><td>${scrapWeight.toFixed(4)} lbs</td></tr>
+          </table>
+        </div>
+
+        ${hasCost ? `
+        <div class="section">
+          <h2>Cost Analysis</h2>
+          <table>
+            <tr><td>Material $/lb</td><td>$${costLb.toFixed(2)}</td></tr>
+            <tr><td>Sheet Cost</td><td>$${sheetCost.toFixed(4)}</td></tr>
+            <tr class="highlight"><td>Cost per Part</td><td>$${costPerPart.toFixed(4)}</td></tr>
+          </table>
+        </div>
+        ` : ""}
+
+        <div style="margin-top: 30px; font-size: 10px; color: #999; text-align: center;">
+          Louis A. Nelson, Inc. — Thermoform Layout Optimizer
+        </div>
+      </body>
+      </html>
+    `;
+    const printWindow = window.open("", "_blank");
+    printWindow.document.write(printContent);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => { printWindow.print(); }, 250);
+  };
+
   const mobileToggle = isMobile ? (
     <button onClick={() => setShowInputs(!showInputs)}
       style={{ padding: "8px 14px", fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: showInputs ? "#334155" : "#1e3a5f", border: `1px solid ${showInputs ? "#64748b" : "#4EA8DE"}`, color: showInputs ? "#e2e8f0" : "#93c5fd", borderRadius: 6, cursor: "pointer" }}>
@@ -596,6 +746,12 @@ export default function App() {
           {mobileToggle}
           <button onClick={() => fileRef.current?.click()} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #4EA8DE", color: "#93c5fd", borderRadius: 6, cursor: "pointer" }}>
             ⬆ DXF
+          </button>
+          <button onClick={exportToCSV} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #22c55e", color: "#86efac", borderRadius: 6, cursor: "pointer" }}>
+            ⬇ CSV
+          </button>
+          <button onClick={handlePrint} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #a855f7", color: "#d8b4fe", borderRadius: 6, cursor: "pointer" }}>
+            🖨 Print
           </button>
         </div>
         <input ref={fileRef} type="file" accept=".dxf" onChange={handleDXF} style={{ display: "none" }} />
