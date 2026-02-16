@@ -503,13 +503,10 @@ export default function App() {
     [partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb]
   );
 
-  // Reset preview when dimensions change
+  // Reset preview when dimensions change (but keep manual overrides)
   useEffect(() => {
     setPreviewMaxIndex(null);
-    setManualIndex(null);
-    setManualIndexText("");
-    setForceAcross(null);
-    setForceDown(null);
+    // Don't reset manualIndex, forceAcross, forceDown - let user keep their overrides
   }, [partW, partL, zHeight, moldWidth]);
 
   // Initialize manual spacing to auto value (1x z-height) when switching to manual
