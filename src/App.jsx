@@ -1,1290 +1,1246 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 
-const MATERIALS = [
-  { name: "rPET", density: 1.38, color: "#4EA8DE", price: 0.55 },
-  { name: "PET (Virgin)", density: 1.38, color: "#48BFE3", price: 0.65 },
-  { name: "PETG", density: 1.27, color: "#56CFE1", price: 0.95 },
-  { name: "HIPS", density: 1.05, color: "#64DFDF", price: 0.85 },
-  { name: "PP", density: 0.91, color: "#72EFDD", price: 0.70 },
-  { name: "PVC", density: 1.40, color: "#80FFDB", price: 0.55 },
-  { name: "ABS", density: 1.05, color: "#5E60CE", price: 1.05 },
-  { name: "Polycarbonate", density: 1.20, color: "#7400B8", price: 1.75 },
-  { name: "PLA", density: 1.24, color: "#6930C3", price: 0.95 },
-  { name: "Polystyrene (GPPS)", density: 1.05, color: "#5390D9", price: 0.80 },
-];
+/* ═══════════════════════════════════════════════════════════
+   GLOBAL STYLES
+═══════════════════════════════════════════════════════════ */
+const GLOBAL_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
 
-const MOLD_WIDTHS = [20, 21, 22, 24, 25, 26, 28, 30];
-const COMMON_GAUGES = [0.010, 0.012, 0.015, 0.018, 0.020, 0.024, 0.030, 0.033, 0.040, 0.048, 0.060, 0.080, 0.100, 0.120];
-const MAX_INDEX = 36;
-const CHAIN_TOTAL = 1.5;
-const CHAIN_EACH = 0.75;
-const GCC_TO_LBIN3 = 0.0361273;
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-// FRED PPI: Plastics Material & Resins Mfg (PCU325211325211)
-// Source: BLS via FRED / ycharts — last updated Feb 6, 2026
-const FRED_PPI = [
-  { date: "Dec 2024", value: 315.19 },
-  { date: "Jan 2025", value: 315.01 },
-  { date: "Feb 2025", value: 321.45 },
-  { date: "Mar 2025", value: 325.55 },
-  { date: "Apr 2025", value: 322.85 },
-  { date: "May 2025", value: 319.54 },
-  { date: "Jun 2025", value: 317.43 },
-  { date: "Jul 2025", value: 315.62 },
-  { date: "Aug 2025", value: 313.88 },
-  { date: "Sep 2025", value: 312.49 },
-  { date: "Oct 2025", value: 309.28 },
-  { date: "Nov 2025", value: 307.15 },
-  { date: "Dec 2025", value: 302.41 },
-];
+  :root {
+    --bg0:        #020912;
+    --bg1:        #050f20;
+    --bg2:        #071428;
+    --bg3:        #0a1e38;
+    --bg4:        #0d2448;
+    --border:     #0e3060;
+    --border-hi:  #1a4a80;
+    --cyan:       #00d4ff;
+    --cyan-dim:   #0080aa;
+    --cyan-glow:  rgba(0,212,255,0.15);
+    --green:      #00ff9d;
+    --green-dim:  #006644;
+    --amber:      #ff9500;
+    --amber-dim:  #6b3f00;
+    --red:        #ff4455;
+    --text0:      #e8f4ff;
+    --text1:      #8ab0cc;
+    --text2:      #3d6080;
+    --text3:      #1e3a55;
+  }
 
-/* ── Responsive hook ── */
-function useIsMobile(breakpoint = 768) {
-  const [isMobile, setIsMobile] = useState(window.innerWidth < breakpoint);
+  html, body, #root { height: 100%; background: var(--bg0); color: var(--text0); font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 13px; -webkit-font-smoothing: antialiased; }
+
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg1); }
+  ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--cyan-dim); }
+
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  input[type=number] { -moz-appearance: textfield; }
+
+  @keyframes fadein { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes count-up { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+
+  .panel-anim { animation: fadein 0.3s ease forwards; }
+  .stat-anim  { animation: count-up 0.25s ease forwards; }
+
+  .mob-section { border-bottom: 1px solid var(--border); }
+  .mob-section-header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; cursor:pointer; font-family:'Orbitron',monospace; font-size:10px; letter-spacing:0.12em; color:var(--cyan); text-transform:uppercase; background:var(--bg1); user-select:none; }
+  .mob-section-header:active { background:var(--bg2); }
+
+  .layout-thumb:hover { border-color: var(--cyan) !important; box-shadow: 0 0 24px var(--cyan-glow) !important; }
+
+  @media print {
+    body > * { display: none !important; }
+    #print-report { display: block !important; }
+    @page { size: letter landscape; margin: 0.4in; }
+  }
+`;
+
+function InjectCSS() {
   useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < breakpoint);
-    window.addEventListener("resize", handler);
-    return () => window.removeEventListener("resize", handler);
-  }, [breakpoint]);
-  return isMobile;
+    const el = document.createElement("style");
+    el.textContent = GLOBAL_CSS;
+    document.head.appendChild(el);
+    return () => document.head.removeChild(el);
+  }, []);
+  return null;
 }
 
-/* ── DXF Parser ── */
+/* ═══════════════════════════════════════════════════════════
+   CONSTANTS
+═══════════════════════════════════════════════════════════ */
+const MATERIALS = [
+  { name: "rPET",          density: 1.38, price: 0.55 },
+  { name: "PET (Virgin)",  density: 1.38, price: 0.65 },
+  { name: "PETG",          density: 1.27, price: 0.95 },
+  { name: "HIPS",          density: 1.05, price: 0.85 },
+  { name: "PP",            density: 0.91, price: 0.70 },
+  { name: "PVC",           density: 1.40, price: 0.55 },
+  { name: "ABS",           density: 1.05, price: 1.05 },
+  { name: "Polycarbonate", density: 1.20, price: 1.75 },
+  { name: "PLA",           density: 1.24, price: 0.95 },
+  { name: "GPPS",          density: 1.05, price: 0.72 },
+];
+const WEB_WIDTHS  = [20, 21, 22, 24, 25, 26, 28, 30];
+const GAUGES      = [0.010,0.012,0.015,0.018,0.020,0.024,0.030,0.033,0.040,0.048,0.060,0.080,0.100,0.120];
+const CHAIN_EACH  = 0.75;
+const MAX_INDEX   = 36;
+const GCC_TO_LIN3 = 0.0361273;
+
+/* ═══════════════════════════════════════════════════════════
+   DXF PARSER
+   Strategy:
+   1. If a named die/cut/outline/part layer exists → use only those entities
+   2. Else exclude plate/border/frame layers → use what remains
+   3. Else use everything
+   When multiple cavities are present (mold layout files), detect the
+   repeating arc-cluster pattern and return a single cavity's dimensions
+   plus the grid layout (across × down) and c/c distances.
+═══════════════════════════════════════════════════════════ */
 function parseDXF(text) {
   const lines = text.split(/\r?\n/);
   const entities = [];
   let i = 0;
-  while (i < lines.length) { if (lines[i].trim() === "ENTITIES") { i++; break; } i++; }
+
+  while (i < lines.length && lines[i].trim() !== "ENTITIES") i++;
+  i++;
+
   while (i < lines.length) {
-    const code = lines[i]?.trim(), val = lines[i + 1]?.trim();
+    const code = lines[i]?.trim();
+    const val  = lines[i + 1]?.trim();
     if (code === "0" && val === "ENDSEC") break;
-    if (code === "0" && (val === "LINE" || val === "ARC")) {
-      const ent = { type: val, layer: "", props: {} }; i += 2;
+
+    if (code === "0" && (val === "LINE" || val === "ARC" || val === "LWPOLYLINE" || val === "CIRCLE")) {
+      const ent = { type: val, layer: "", props: {}, pts: [] };
+      i += 2;
       while (i < lines.length) {
-        const c = parseInt(lines[i]?.trim()), v = lines[i + 1]?.trim();
-        if (isNaN(c)) { i++; continue; } if (c === 0) break;
-        if (c === 8) ent.layer = v;
+        const c = parseInt(lines[i]?.trim());
+        const v = lines[i + 1]?.trim();
+        if (isNaN(c)) { i++; continue; }
+        if (c === 0) break;
+        if (c === 8)  ent.layer = v;
         else if (c === 10) ent.props.x1 = parseFloat(v);
         else if (c === 20) ent.props.y1 = parseFloat(v);
         else if (c === 11) ent.props.x2 = parseFloat(v);
         else if (c === 21) ent.props.y2 = parseFloat(v);
         else if (c === 40) ent.props.radius = parseFloat(v);
         else if (c === 50) ent.props.startAngle = parseFloat(v);
-        else if (c === 51) ent.props.endAngle = parseFloat(v);
+        else if (c === 51) ent.props.endAngle   = parseFloat(v);
+        i += 2;
+      }
+      entities.push(ent);
+    } else if (code === "0" && val === "LWPOLYLINE") {
+      const ent = { type: "LWPOLYLINE", layer: "", props: {}, pts: [] };
+      i += 2;
+      let curX = null;
+      while (i < lines.length) {
+        const c = parseInt(lines[i]?.trim());
+        const v = lines[i + 1]?.trim();
+        if (isNaN(c)) { i++; continue; }
+        if (c === 0) break;
+        if (c === 8)  ent.layer = v;
+        else if (c === 10) { curX = parseFloat(v); }
+        else if (c === 20) { if (curX !== null) { ent.pts.push([curX, parseFloat(v)]); curX = null; } }
         i += 2;
       }
       entities.push(ent);
     } else { i++; }
   }
-  const dieCut = entities.filter(e => e.layer.toLowerCase().includes("die") || e.layer.toLowerCase().includes("cut"));
-  const used = dieCut.length > 4 ? dieCut : entities.filter(e => e.layer !== "Plate" && e.layer !== "0");
-  const fallback = used.length > 4 ? used : entities;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const e of fallback) {
-    const p = e.props;
-    if (e.type === "LINE") {
-      [p.x1, p.x2].forEach(v => { if (v !== undefined) { minX = Math.min(minX, v); maxX = Math.max(maxX, v); } });
-      [p.y1, p.y2].forEach(v => { if (v !== undefined) { minY = Math.min(minY, v); maxY = Math.max(maxY, v); } });
-    } else if (e.type === "ARC" && p.radius) {
-      const cx = p.x1 || 0, cy = p.y1 || 0, r = p.radius;
-      minX = Math.min(minX, cx - r); maxX = Math.max(maxX, cx + r);
-      minY = Math.min(minY, cy - r); maxY = Math.max(maxY, cy + r);
+
+  // ── Layer selection ──
+  const PLATE_LAYERS = new Set(["plate","border","frame","sheet","web","0"]);
+  const isDieCut = e => { const l=e.layer.toLowerCase(); return l.includes("die")||l.includes("cut")||l.includes("outline")||l.includes("part"); };
+  const dieCut   = entities.filter(isDieCut);
+  const notPlate = entities.filter(e => !PLATE_LAYERS.has(e.layer.toLowerCase()));
+  const pool     = dieCut.length >= 4 ? dieCut : notPlate.length >= 4 ? notPlate : entities;
+
+  // mm detection helper
+  const extentOf = ents => {
+    let mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
+    for (const e of ents) {
+      const p=e.props;
+      if (e.type==="LINE") { [p.x1,p.x2].forEach(v=>{ if(v!=null){mnX=Math.min(mnX,v);mxX=Math.max(mxX,v);} }); [p.y1,p.y2].forEach(v=>{ if(v!=null){mnY=Math.min(mnY,v);mxY=Math.max(mxY,v);} }); }
+      else if (e.type==="ARC"||e.type==="CIRCLE") { const cx=p.x1||0,cy=p.y1||0,r=p.radius||0; mnX=Math.min(mnX,cx-r);mxX=Math.max(mxX,cx+r);mnY=Math.min(mnY,cy-r);mxY=Math.max(mxY,cy+r); }
+      else if (e.type==="LWPOLYLINE") { for(const [x,y] of e.pts){mnX=Math.min(mnX,x);mxX=Math.max(mxX,x);mnY=Math.min(mnY,y);mxY=Math.max(mxY,y);} }
     }
-  }
-  if (!isFinite(minX)) return null;
-  const totalW = maxX - minX, totalH = maxY - minY;
-  const arcs = fallback.filter(e => e.type === "ARC" && e.props.radius);
-  const cornerR = arcs.length > 0 ? Math.min(...[...new Set(arcs.map(a => +a.props.radius.toFixed(4)))]) : 0;
-  return { totalW: +totalW.toFixed(4), totalH: +totalH.toFixed(4), entityCount: fallback.length, arcCount: arcs.length, cornerR: +cornerR.toFixed(4) };
-}
-
-function groupVals(values, tol) {
-  if (!values.length) return [];
-  const sorted = [...values].sort((a, b) => a - b);
-  const groups = []; let curr = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] - sorted[i - 1] < tol) curr.push(sorted[i]);
-    else { groups.push(curr.reduce((s, v) => s + v, 0) / curr.length); curr = [sorted[i]]; }
-  }
-  groups.push(curr.reduce((s, v) => s + v, 0) / curr.length);
-  return groups;
-}
-
-/* ── Layout Engine (spacing = 1x z-height, lesser spacing goes to edges) ── */
-function tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, forceAcross = null, forceDown = null) {
-  // Spacing is 1x z-height for both internal gaps and perimeter
-  // If there's extra space (uneven), the lesser value goes toward the outside edges
-  const availableW = formW - 2 * edgeMin;
-  const availableL = formL - 2 * edgeMin;
-
-  // Web direction: fit parts with given spacing within available area
-  let across = forceAcross !== null ? forceAcross : (spacing > 0 ? Math.floor((availableW + spacing) / (cW + spacing)) : Math.floor(availableW / cW));
-  if (forceAcross === null) {
-    while (across > 0) {
-      const needed = across * cW + (across - 1) * spacing;
-      if (needed <= availableW + 0.001) break;
-      across--;
-    }
-  }
-  if (across <= 0) return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW: spacing, actualSpacingL: spacing, edgeMarginW: edgeMin, edgeMarginL: edgeMin };
-
-  // Calculate internal spacing and edge margins
-  // Internal spacing stays at exactly 'spacing' (1x z-height)
-  // Extra space goes to edges (lesser value toward outside)
-  const blockWWithInternalSpacing = across * cW + (across - 1) * spacing;
-  const extraW = availableW - blockWWithInternalSpacing;
-  const edgeMarginW = edgeMin + extraW / 2; // Extra space distributed to edges
-  const actualSpacingW = spacing; // Internal spacing stays fixed
-  const moldPlateW = blockWWithInternalSpacing + 2 * edgeMin;
-
-  // Index direction: fit rows with given spacing, round up to whole inch
-  let down = forceDown !== null ? forceDown : (spacing > 0 ? Math.floor((availableL + spacing) / (cL + spacing)) : Math.floor(availableL / cL));
-  if (forceDown === null) {
-    while (down > 0) {
-      const needed = down * cL + (down - 1) * spacing;
-      if (needed <= availableL + 0.001) break;
-      down--;
-    }
-  }
-  if (down <= 0) return { across: 0, down: 0, count: 0, marginW: edgeMarginW, marginL: 0, moldPlateW, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL: spacing, edgeMarginW, edgeMarginL: edgeMin };
-
-  const blockLWithInternalSpacing = down * cL + (down - 1) * spacing;
-  const moldPlateL = blockLWithInternalSpacing + 2 * edgeMin;
-  const usedIndex = Math.ceil(moldPlateL);
-
-  // Extra space in index direction also goes to edges
-  const actualAvailableL = usedIndex - 2 * edgeMin;
-  const extraL = actualAvailableL - blockLWithInternalSpacing;
-  const edgeMarginL = edgeMin + extraL / 2; // Extra space distributed to edges
-  const actualSpacingL = spacing; // Internal spacing stays fixed
-
-  const formingArea = formW * usedIndex;
-  const partsArea = across * down * cW * cL;
-  const utilization = formingArea > 0 ? (partsArea / formingArea) * 100 : 0;
-  return { across, down, count: across * down, marginW: edgeMarginW, marginL: edgeMarginL, moldPlateW, moldPlateL, usedIndex, cellW: cW, cellL: cL, spacing, actualSpacingW, actualSpacingL, utilization, edgeMarginW, edgeMarginL };
-}
-
-function optimizeSpacing(cW, cL, zHeight, formW, formL, forceAcross = null, forceDown = null) {
-  // Spacing is always 1x z-height
-  const edgeMin = zHeight; // Edge margin = 1x z-height
-  const spacing = zHeight; // Internal spacing = 1x z-height
-
-  const result = tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, forceAcross, forceDown);
-  if (result.count === 0) {
-    return { across: 0, down: 0, count: 0, marginW: 0, marginL: 0, moldPlateW: 0, moldPlateL: 0, usedIndex: 0, cellW: cW, cellL: cL, spacing, utilization: 0, edgeMarginW: edgeMin, edgeMarginL: edgeMin };
-  }
-  return result;
-}
-
-function calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, fixedSpacing = null, fixedEdge = null, forceAcross = null, forceDown = null) {
-  // Default: spacing = 1x z-height, edge margin = 1x z-height
-  const edgeMin = fixedEdge !== null ? fixedEdge : zHeight;
-  const spacing = fixedSpacing !== null ? fixedSpacing : zHeight;
-  const formW = moldWidth, formL = maxIndex;
-
-  // Get result for each orientation
-  const getResult = (cW, cL, fAcross, fDown) => {
-    return tryFitWithSpacing(cW, cL, spacing, edgeMin, formW, formL, fAcross, fDown);
+    return { minX:mnX,maxX:mxX,minY:mnY,maxY:mxY,w:mxX-mnX,h:mxY-mnY };
   };
 
-  const A = getResult(partW, partL, forceAcross, forceDown);
-  const B = getResult(partL, partW, forceAcross, forceDown);
-  const bestOri = A.count > B.count ? "A" : A.count < B.count ? "B" : (A.utilization >= B.utilization ? "A" : "B");
+  // ── Try to detect multi-cavity mold layout via arc clusters ──
+  // Each cavity typically has 4 corner arcs of the same radius.
+  // Group arcs by radius, then cluster by proximity into cavity bounding boxes.
+  const allArcs = pool.filter(e => e.type==="ARC" && e.props.radius);
+  let cavityResult = null;
 
-  // Find optimal mold width suggestion across all standard widths
-  const suggestions = [];
-  for (const mw of MOLD_WIDTHS) {
-    const sA = optimizeSpacing(partW, partL, zHeight, mw, maxIndex);
-    const sB = optimizeSpacing(partL, partW, zHeight, mw, maxIndex);
-    const best = sA.count > sB.count ? sA : sA.count < sB.count ? sB : (sA.utilization >= sB.utilization ? sA : sB);
-    if (best.count > 0) {
-      suggestions.push({
-        moldWidth: mw,
-        ...best,
-        ori: sA.count > sB.count ? "A" : sA.count < sB.count ? "B" : (sA.utilization >= sB.utilization ? "A" : "B"),
+  if (allArcs.length >= 4) {
+    // Find the most common arc radius (corner radius of cavities)
+    const rCounts = {};
+    allArcs.forEach(a => { const r=+a.props.radius.toFixed(4); rCounts[r]=(rCounts[r]||0)+1; });
+    const cornR = +Object.entries(rCounts).sort((a,b)=>b[1]-a[1])[0][0];
+    const cornerArcs = allArcs.filter(a => Math.abs(a.props.radius-cornR)<0.001);
+
+    // Each set of 4 corner arcs defines one cavity
+    if (cornerArcs.length >= 4 && cornerArcs.length % 4 === 0) {
+      const numCav = cornerArcs.length / 4;
+      const cavBoxes = [];
+      for (let ci=0; ci<numCav; ci++) {
+        const grp = cornerArcs.slice(ci*4, ci*4+4);
+        const xs = grp.map(a=>a.props.x1||0), ys = grp.map(a=>a.props.y1||0);
+        const mnX=Math.min(...xs)-cornR, mxX=Math.max(...xs)+cornR;
+        const mnY=Math.min(...ys)-cornR, mxY=Math.max(...ys)+cornR;
+        cavBoxes.push({ cx:(mnX+mxX)/2, cy:(mnY+mxY)/2, w:mxX-mnX, h:mxY-mnY });
+      }
+
+      if (cavBoxes.length >= 1) {
+        // Use die cut dimensions as-drawn — preserve DXF orientation
+        const partW = +cavBoxes[0].w.toFixed(4);
+        const partL = +cavBoxes[0].h.toFixed(4);
+
+        // Detect grid layout from center positions
+        const roundTo = (v,d=1) => Math.round(v/d)*d;
+        const uniqueY = [...new Set(cavBoxes.map(c=>roundTo(c.cy,0.1)))].sort((a,b)=>a-b);
+        const uniqueX = [...new Set(cavBoxes.map(c=>roundTo(c.cx,0.1)))].sort((a,b)=>a-b);
+        const across = uniqueX.length, down = uniqueY.length;
+        const ctcH = across>1 ? +(uniqueX[1]-uniqueX[0]).toFixed(4) : null;
+        const ctcV = down>1   ? +(uniqueY[1]-uniqueY[0]).toFixed(4) : null;
+
+        const scale = (partW>100||partL>100) ? 1/25.4 : 1;
+        cavityResult = {
+          partW: +(partW*scale).toFixed(4),
+          partL: +(partL*scale).toFixed(4),
+          cornerR: +(cornR*scale).toFixed(4),
+          across, down,
+          ctcH: ctcH ? +(ctcH*scale).toFixed(4) : null,
+          ctcV: ctcV ? +(ctcV*scale).toFixed(4) : null,
+          units: scale===1?"in":"mm→in",
+          layerUsed: dieCut.length>=4?"die/cut layer":"all layers",
+          isLayout: numCav > 1,
+        };
+      }
+    }
+  }
+
+  if (cavityResult) return cavityResult;
+
+  // ── Fallback: full outer bounding box = die cut extent ──
+  // The die cut is the driving dimension for layout — use all geometry extent.
+  const ext = extentOf(pool);
+  if (!isFinite(ext.minX)) return null;
+  const scale = (ext.w>100||ext.h>100) ? 1/25.4 : 1;
+  const arcs2 = pool.filter(e=>e.type==="ARC"&&e.props.radius);
+  const cornRFallback = arcs2.length ? Math.min(...arcs2.map(e=>e.props.radius)) : 0;
+  return {
+    partW: +(ext.w*scale).toFixed(4),
+    partL: +(ext.h*scale).toFixed(4),
+    cornerR: +(cornRFallback*scale).toFixed(4),
+    units: scale===1?"in":"mm→in",
+    layerUsed: dieCut.length>=4?"die/cut layer":"all layers",
+    isLayout: false,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CSV EXPORT
+═══════════════════════════════════════════════════════════ */
+function buildCSV(layout, inputs, stats) {
+  if (!layout || !stats) return "";
+  const { formW, usedIndex, cavities, maxCavities, across, down,
+          sp, spH, spV, edge, ctcX, ctcY, marginLeft, marginRight, partW, partL, zH } = layout;
+  const { material, gauge, partName } = inputs;
+  const now = new Date().toLocaleString("en-US");
+
+  const rows = [
+    ["THERMOFORM LAYOUT OPTIMIZER — EXPORT"],
+    ["Generated", now],
+    [],
+    ["PART INFO"],
+    ["Part Name / Job #", partName || "(unnamed)"],
+    ["Part Width (in)",   partW],
+    ["Part Length (in)",  partL],
+    ["Z-Height (in)",     zH],
+    ["Orientation",       inputs.rotated ? "Rotated 90° (L×W)" : "Normal (W×L)"],
+    ["Material",          material],
+    ["Gauge (in)",        gauge],
+    ["Gauge (thou)",      (gauge * 1000).toFixed(0)],
+    ["Gauge (mm)",        (gauge * 25.4).toFixed(3)],
+    [],
+    ["LAYOUT"],
+    ["Mold Width (in)",            formW],
+    ["Sheet Width w/ Chains (in)", (formW + 2 * CHAIN_EACH).toFixed(3)],
+    ["Index Length (in)",          usedIndex.toFixed(4)],
+    ["Index Override (in)",        inputs.indexOverride ? parseFloat(inputs.indexOverride).toFixed(3) : "none (36 max)"],
+    ["Cavities Across",            across],
+    ["Cavities Down",              down],
+    ["Total Cavities",             cavities],
+    ["Max Possible Cavities",      maxCavities],
+    ["C/C Horizontal (in)",        ctcX.toFixed(4)],
+    ["C/C Vertical (in)",          ctcY.toFixed(4)],
+    ["Spacing Horizontal (in)",    (spH??sp).toFixed(4)],
+    ["Spacing Vertical (in)",      (spV??sp).toFixed(4)],
+    ["Edge Margin — Left (in)",    marginLeft.toFixed(4)],
+    ["Edge Margin — Right (in)",   marginRight.toFixed(4)],
+    [],
+    ["MATERIAL & WEIGHT"],
+    ["Sheet Area (in²)",           stats.sheetArea.toFixed(4)],
+    ["Parts Area (in²)",           stats.partsArea.toFixed(4)],
+    ["Scrap Area (in²)",           stats.scrapArea.toFixed(4)],
+    ["Material Utilization (%)",   stats.utilPct.toFixed(2)],
+    ["Sheet Weight (lbs)",         stats.sheetLbs.toFixed(6)],
+    ["Parts Weight (lbs)",         stats.partsLbs.toFixed(6)],
+    ["Scrap Weight (lbs)",         stats.scrapLbs.toFixed(6)],
+    [],
+    ["COST"],
+    ["Material $/lb",              stats.pricePerLb ? stats.pricePerLb.toFixed(3) : "(estimated) " + stats.estPrice.toFixed(3)],
+    ["Sheet Cost ($)",             stats.sheetCost.toFixed(4)],
+    ["Cost Per Part ($)",          stats.costPerPart.toFixed(4)],
+    [],
+    ["CAVITY POSITIONS (center X, center Y in inches from forming-area origin)"],
+    ["Cavity #", "Row", "Col", "Center X (in)", "Center Y (in)"],
+    ...layout.positions.map((p, i) => [i+1, p.row+1, p.col+1, p.cx.toFixed(4), p.cy.toFixed(4)]),
+  ];
+
+  return rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+}
+
+function downloadCSV(csv, filename) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LAYOUT ENGINE
+   Horizontal: always automatic — 1×Z gap, parts centered on web.
+   Vertical mode (spacingOpts.modeV):
+     "edges" — gap = 1×Z, surplus → top/bottom margins
+     "gaps"  — edge = 1×Z, surplus → between rows
+     "ctc"   — user sets exact vertical center-to-center
+═══════════════════════════════════════════════════════════ */
+function calcLayout(partW, partL, zH, moldW, minGapArg, userQty, maxIdx, spacingOpts) {
+  const minSp = minGapArg != null ? Math.max(0.25, minGapArg) : Math.max(zH, 0.5);
+  const modeV = spacingOpts?.modeV || "gaps";
+  const ctcV  = spacingOpts?.ctcV  || null;
+
+  // ── Horizontal: always automatic (1×Z gap, centered) ──
+  const spH     = minSp;
+  const maxAcross = Math.max(0, Math.floor((moldW - 2*minSp + minSp) / (partW + minSp)));
+  const usedW   = maxAcross * partW + Math.max(0, maxAcross - 1) * spH;
+  const edgeH   = (moldW - usedW) / 2;
+
+  // ── Row count at minimum vertical spacing ──
+  const maxDown_fit = Math.max(0, Math.floor((maxIdx - 2*minSp + minSp) / (partL + minSp)));
+  const maxCavities_prelim = maxAcross * maxDown_fit;
+  const cavities  = (userQty != null && userQty > 0 && userQty < maxCavities_prelim) ? userQty : maxCavities_prelim;
+  const fullRows  = Math.floor(cavities / maxAcross);
+  const remainder = cavities % maxAcross;
+  const totalRows = remainder > 0 ? fullRows + 1 : fullRows;
+
+  // ── Vertical spacing based on mode ──
+  let spV, edgeV;
+  if (modeV === "ctc" && ctcV != null) {
+    // User-specified c/c: gap = ctc - partL, edges get the rest
+    spV   = Math.max(0, ctcV - partL);
+    edgeV = Math.max(0, (maxIdx - totalRows * partL - Math.max(0, totalRows - 1) * spV) / 2);
+  } else if (modeV === "edges") {
+    // Gap locked at minSp, all surplus goes to top/bottom margins
+    spV   = minSp;
+    const usedV = totalRows * partL + Math.max(0, totalRows - 1) * spV;
+    edgeV = Math.max(0, (maxIdx - usedV) / 2);
+  } else {
+    // "gaps" (default): edges locked at minSp, surplus distributed between rows
+    edgeV = minSp;
+    const remainV = maxIdx - 2 * edgeV - totalRows * partL;
+    spV = totalRows > 1 ? Math.max(minSp, remainV / (totalRows - 1)) : Math.max(minSp, remainV);
+  }
+
+  const maxCavities = maxAcross * maxDown_fit;
+
+  if (maxAcross === 0 || maxDown_fit === 0) {
+    return { across:0, down:0, cavities:0, maxCavities:0, usedIndex:maxIdx, positions:[],
+             sp:minSp, edge:minSp, partW, partL, formW:moldW, zH,
+             marginLeft:0, marginRight:0, ctcX:partW+minSp, ctcY:partL+minSp,
+             spH:minSp, spV:minSp, edgeH:minSp, edgeV:minSp };
+  }
+
+  // ── Build positions ──
+  const positions = [];
+  for (let row = 0; row < totalRows; row++) {
+    const cols = row < fullRows ? maxAcross : remainder;
+    const rowW    = cols * partW + Math.max(0, cols - 1) * spH;
+    const startX  = (moldW - rowW) / 2;
+    for (let col = 0; col < cols; col++) {
+      positions.push({
+        cx: startX + col * (partW + spH) + partW / 2,
+        cy: edgeV  + row * (partL + spV) + partL / 2,
+        row, col,
       });
     }
   }
-  // Sort suggestions: best utilization first, then most cavities
-  suggestions.sort((a, b) => b.utilization - a.utilization || b.count - a.count);
 
-  const chosenOri = bestOri === "A" ? A : B;
   return {
-    orientationA: A,
-    orientationB: B,
-    best: bestOri,
-    spacing: chosenOri.spacing,
-    edgeMin,
-    formW,
-    suggestions,
-    minSpacing: zHeight,
-    maxSpacing: zHeight,
-    isManualSpacing: fixedSpacing !== null,
+    across: maxAcross, down: totalRows, cavities, maxCavities,
+    usedIndex: maxIdx,
+    positions,
+    sp: spH, spH, spV, edgeH, edgeV,
+    edge: edgeH,
+    partW, partL, formW: moldW, zH,
+    marginLeft: edgeH, marginRight: edgeH,
+    ctcX: partW + spH,
+    ctcY: partL + spV,
+    modeV,
   };
 }
 
-function calcLayout(partW, partL, zHeight, moldWidth, maxIndex) {
-  return calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, maxIndex, null);
-}
+/* ═══════════════════════════════════════════════════════════
+   LAYOUT SVG
+═══════════════════════════════════════════════════════════ */
+function LayoutSVG({ layout, scale, printMode = false }) {
+  if (!layout || layout.cavities === 0) return null;
+  const { formW, usedIndex, positions, partW, partL, sp, spH=sp, spV=sp, edgeH=sp, edgeV=sp, edge, marginLeft, ctcX, ctcY, cavities, across } = layout;
+  const sheetW = formW + 2*CHAIN_EACH;
+  const svgW = sheetW * scale, svgH = usedIndex * scale;
+  const ox = CHAIN_EACH * scale;
+  const fs = Math.max(4.5, Math.min(9, scale * 0.7));
+  const ar = Math.max(2, scale * 0.22);
 
-/* ── Index Comparison Calculator ── */
-function calcIndexComparisons(partW, partL, zHeight, moldWidth, currentUsedIndex, densityLbIn3, gauge, costLb) {
-  const rawComparisons = [];
-  const totalSheetW = moldWidth + CHAIN_TOTAL;
-  const edgeMin = zHeight; // Edge margin = 1x z-height
-  const cellL = Math.min(partL, partW); // Use smaller dimension
-  const minIndex = Math.ceil(cellL + 2 * edgeMin);
+  const C = printMode ? {
+    bg:"#f5f7fa", chainBg:"#e0e4eb", chainSt:"#b0b8c8",
+    formBg:"#ffffff", formSt:"#334155",
+    cavFill:"#dceeff", cavSt:"#0066cc", cavNum:"#0066cc",
+    dimSt:"#999", dimTx:"#333", label:"#aaa",
+  } : {
+    bg:"#020912", chainBg:"#040d1e", chainSt:"#0a2040",
+    formBg:"#050f20", formSt:"#1a4a80",
+    cavFill:"#071e3d", cavSt:"#00d4ff", cavNum:"#00d4ff",
+    dimSt:"#1a4a80", dimTx:"#8ab0cc", label:"#1e3a55",
+  };
 
-  // Calculate for all possible index lengths
-  for (let idx = MAX_INDEX; idx >= minIndex; idx--) {
-    const A = optimizeSpacing(partW, partL, zHeight, moldWidth, idx);
-    const B = optimizeSpacing(partL, partW, zHeight, moldWidth, idx);
-    const best = A.count > B.count ? A : A.count < B.count ? B : (A.utilization >= B.utilization ? A : B);
+  const hDim = (x1, x2, y, lbl) => {
+    const mid=(x1+x2)/2;
+    return (<g key={`h${x1}${x2}${y}`}>
+      <line x1={x1} y1={y} x2={x2} y2={y} stroke={C.dimSt} strokeWidth={0.6}/>
+      <line x1={x1} y1={y-ar} x2={x1} y2={y+ar} stroke={C.dimSt} strokeWidth={0.6}/>
+      <line x1={x2} y1={y-ar} x2={x2} y2={y+ar} stroke={C.dimSt} strokeWidth={0.6}/>
+      <rect x={mid-22} y={y-7} width={44} height={12} fill={C.bg}/>
+      <text x={mid} y={y+4} textAnchor="middle" fill={C.dimTx} fontSize={fs} fontFamily="'JetBrains Mono',monospace">{lbl}</text>
+    </g>);
+  };
 
-    if (best.count === 0) continue;
+  const vDim = (x, y1, y2, lbl) => {
+    const mid=(y1+y2)/2;
+    return (<g key={`v${x}${y1}${y2}`} transform={`rotate(-90,${x},${mid})`}>
+      <line x1={x} y1={y1} x2={x} y2={y2} stroke={C.dimSt} strokeWidth={0.6}/>
+      <line x1={x-ar} y1={y1} x2={x+ar} y2={y1} stroke={C.dimSt} strokeWidth={0.6}/>
+      <line x1={x-ar} y1={y2} x2={x+ar} y2={y2} stroke={C.dimSt} strokeWidth={0.6}/>
+      <rect x={x-22} y={mid-7} width={44} height={12} fill={C.bg}/>
+      <text x={x} y={mid+4} textAnchor="middle" fill={C.dimTx} fontSize={fs} fontFamily="'JetBrains Mono',monospace">{lbl}</text>
+    </g>);
+  };
 
-    const formingArea = moldWidth * best.usedIndex;
-    const totalSheetArea = totalSheetW * best.usedIndex;
-    const partArea = best.cellW * best.cellL;
-    const totalPartsArea = best.count * partArea;
-    const sheetWeight = totalSheetArea * gauge * densityLbIn3;
-    const costPerPart = costLb > 0 && best.count > 0 ? (sheetWeight * costLb) / best.count : 0;
-
-    rawComparisons.push({
-      maxIndex: idx,
-      usedIndex: best.usedIndex,
-      count: best.count,
-      across: best.across,
-      down: best.down,
-      utilization: best.utilization,
-      sheetWeight,
-      costPerPart,
-      spacing: best.spacing,
-      isCurrent: best.usedIndex === currentUsedIndex,
-    });
-  }
-
-  // Deduplicate by usedIndex - keep only unique configurations
-  const seen = new Set();
-  const comparisons = rawComparisons.filter(c => {
-    const key = `${c.usedIndex}-${c.count}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  return comparisons;
-}
-
-/* ── SVG Layout ── */
-function LayoutSVG({ layout, orientation, moldWidth, materialColor }) {
-  const ori = orientation === "A" ? layout.orientationA : layout.orientationB;
-  const { across, down, cellW, cellL, usedIndex, edgeMarginW, edgeMarginL, actualSpacingW, actualSpacingL } = ori;
-  const { edgeMin } = layout;
-  // Use actual spacing for internal gaps, edge margins include any extra space
-  const spacingW = actualSpacingW || ori.spacing;
-  const spacingL = actualSpacingL || ori.spacing;
-  const marginW = edgeMarginW || edgeMin;
-  const marginL = edgeMarginL || edgeMin;
-  if (!across || !down) return <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>Part does not fit this configuration.</div>;
-
-  const sheetW = moldWidth + CHAIN_TOTAL, sheetL = usedIndex;
-  const pad = 12;
-  const scale = Math.min(540 / (sheetW + pad * 2), 400 / (Math.max(sheetL, 4) + pad * 2));
-  const svgW = (sheetW + pad * 2) * scale, svgH = (sheetL + pad * 2) * scale;
-  const ox = pad * scale, oy = pad * scale;
-  const fS = Math.max(8, Math.min(11, scale * 0.95));
-
-  const parts = [];
-  for (let r = 0; r < down; r++)
-    for (let c = 0; c < across; c++)
-      parts.push({ x: CHAIN_EACH + marginW + c * (cellW + spacingW), y: marginL + r * (cellL + spacingL), w: cellW, h: cellL, key: `${r}-${c}` });
+  const row0=positions.filter(p=>p.row===0), row1=positions.filter(p=>p.row===1);
 
   return (
-    <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: "block", maxHeight: 460 }}>
+    <svg width={svgW} height={svgH+44} viewBox={`-30 -8 ${svgW+60} ${svgH+58}`} style={{display:"block"}}>
       <defs>
-        <pattern id="gP" width={scale} height={scale} patternUnits="userSpaceOnUse"><path d={`M ${scale} 0 L 0 0 0 ${scale}`} fill="none" stroke="#1e293b" strokeWidth="0.4" opacity="0.25" /></pattern>
-        <pattern id="hP" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="#334155" strokeWidth="0.8" opacity="0.35" /></pattern>
+        <pattern id={`ch${printMode}`} patternUnits="userSpaceOnUse" width={6} height={6}>
+          <rect width={6} height={6} fill={C.chainBg}/>
+          <line x1={0} y1={6} x2={6} y2={0} stroke={C.chainSt} strokeWidth={0.8}/>
+        </pattern>
+        {!printMode && <filter id="glow"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>}
       </defs>
-      <rect width={svgW} height={svgH} fill="#0c1222" rx="4" />
-      <rect width={svgW} height={svgH} fill="url(#gP)" />
-      <rect x={ox} y={oy} width={sheetW * scale} height={sheetL * scale} fill="#1a2744" stroke="#475569" strokeWidth="1" strokeDasharray="4,3" />
-      <rect x={ox} y={oy} width={CHAIN_EACH * scale} height={sheetL * scale} fill="url(#hP)" stroke="#3b4c6b" strokeWidth="0.5" />
-      <rect x={ox + (sheetW - CHAIN_EACH) * scale} y={oy} width={CHAIN_EACH * scale} height={sheetL * scale} fill="url(#hP)" stroke="#3b4c6b" strokeWidth="0.5" />
-      <rect x={ox + CHAIN_EACH * scale} y={oy} width={moldWidth * scale} height={sheetL * scale} fill="none" stroke="#64748b" strokeWidth="1.5" />
-      {parts.map(p => <rect key={p.key} x={ox + p.x * scale} y={oy + p.y * scale} width={p.w * scale} height={p.h * scale} fill={materialColor} fillOpacity="0.22" stroke={materialColor} strokeWidth="1.5" rx="2" />)}
 
-      {marginW * scale > 16 && parts.length > 0 && (() => {
-        const fl = ox + CHAIN_EACH * scale, pr = ox + parts[0].x * scale, my = oy + sheetL * 0.5 * scale;
-        return <g><line x1={fl} y1={my - 6} x2={fl} y2={my + 6} stroke="#f59e0b" strokeWidth="0.5" /><line x1={pr} y1={my - 6} x2={pr} y2={my + 6} stroke="#f59e0b" strokeWidth="0.5" /><line x1={fl} y1={my} x2={pr} y2={my} stroke="#f59e0b" strokeWidth="0.8" strokeDasharray="2,2" /><text x={(fl + pr) / 2} y={my - 4} textAnchor="middle" fill="#f59e0b" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace">{marginW.toFixed(2)}"</text></g>;
-      })()}
+      <rect x={-30} y={-8} width={svgW+60} height={svgH+58} fill={C.bg} rx={4}/>
+      <rect x={0} y={0} width={ox} height={svgH} fill={`url(#ch${printMode})`} stroke={C.chainSt} strokeWidth={0.5}/>
+      <rect x={ox+formW*scale} y={0} width={ox} height={svgH} fill={`url(#ch${printMode})`} stroke={C.chainSt} strokeWidth={0.5}/>
+      <rect x={ox} y={0} width={formW*scale} height={svgH} fill={C.formBg} stroke={C.formSt} strokeWidth={1}/>
 
-      {across >= 2 && spacingW * scale > 10 && (() => {
-        const r0 = ox + (parts[0].x + parts[0].w) * scale, l1 = ox + parts[1].x * scale, my = oy + (parts[0].y + parts[0].h * 0.5) * scale;
-        return <g><line x1={r0} y1={my - 5} x2={r0} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={l1} y1={my - 5} x2={l1} y2={my + 5} stroke="#22d3ee" strokeWidth="0.5" /><line x1={r0} y1={my} x2={l1} y2={my} stroke="#22d3ee" strokeWidth="0.8" strokeDasharray="2,2" /><text x={(r0 + l1) / 2} y={my - 4} textAnchor="middle" fill="#22d3ee" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace">{spacingW.toFixed(2)}"</text></g>;
-      })()}
+      {positions.map((p,i)=>{
+        const x=ox+(p.cx-partW/2)*scale, y=(p.cy-partL/2)*scale;
+        const w=partW*scale, h=partL*scale;
+        return (
+          <g key={i} filter={printMode?undefined:"url(#glow)"}>
+            <rect x={x} y={y} width={w} height={h} fill={C.cavFill} stroke={C.cavSt} strokeWidth={printMode?0.8:1} rx={2} opacity={0.9}/>
+            {scale>=4 && <text x={x+w/2} y={y+h/2+fs*0.38} textAnchor="middle" fill={C.cavNum} fontSize={fs*0.72} fontFamily="'JetBrains Mono',monospace" opacity={0.55}>{i+1}</text>}
+          </g>
+        );
+      })}
 
-      {(() => { const dy = oy + sheetL * scale + 5 * scale, x1 = ox + CHAIN_EACH * scale, x2 = ox + (CHAIN_EACH + moldWidth) * scale; return <g><line x1={x1} y1={dy - 2 * scale} x2={x1} y2={dy + 1 * scale} stroke="#94a3b8" strokeWidth="0.5" /><line x1={x2} y1={dy - 2 * scale} x2={x2} y2={dy + 1 * scale} stroke="#94a3b8" strokeWidth="0.5" /><line x1={x1} y1={dy} x2={x2} y2={dy} stroke="#94a3b8" strokeWidth="0.8" /><text x={(x1 + x2) / 2} y={dy + 3 * scale} textAnchor="middle" fill="#cbd5e1" fontSize={fS} fontFamily="'DM Mono', monospace">{moldWidth}" web</text></g>; })()}
+      {scale >= 3 && (<>
+        {hDim(0, svgW, svgH+12, `${(formW+2*CHAIN_EACH).toFixed(3)}"`)}
+        {hDim(ox, ox+formW*scale, svgH+26, `${formW.toFixed(3)}" form`)}
+        {vDim(-18, 0, svgH, `${usedIndex.toFixed(3)}" idx`)}
+        {across>=2 && row0.length>=2 && hDim(ox+row0[0].cx*scale, ox+row0[1].cx*scale, row0[0].cy*scale-(partL/2+edge*0.5)*scale, `${ctcX.toFixed(4)}" c/c`)}
+        {row0.length>0 && row1.length>0 && vDim(ox+(row0[row0.length-1].cx+partW/2)*scale+12, row0[0].cy*scale, row1[0].cy*scale, `${ctcY.toFixed(4)}" c/c`)}
+        {scale>=5 && positions.length>0 && hDim(ox, ox+(positions[0].cx-partW/2)*scale, (positions[0].cy+partL*0.6)*scale, `${marginLeft.toFixed(3)}"`)}
+      </>)}
 
-      {(() => { const dx = ox - 3.5 * scale, y1 = oy, y2 = oy + sheetL * scale; return <g><line x1={dx} y1={y1} x2={dx} y2={y2} stroke="#94a3b8" strokeWidth="0.8" /><line x1={dx - 1 * scale} y1={y1} x2={dx + 1 * scale} y2={y1} stroke="#94a3b8" strokeWidth="0.5" /><line x1={dx - 1 * scale} y1={y2} x2={dx + 1 * scale} y2={y2} stroke="#94a3b8" strokeWidth="0.5" /><text x={dx - 1.8 * scale} y={(y1 + y2) / 2} textAnchor="middle" fill="#cbd5e1" fontSize={fS} fontFamily="'DM Mono', monospace" transform={`rotate(-90, ${dx - 1.8 * scale}, ${(y1 + y2) / 2})`}>{usedIndex}" index</text></g>; })()}
-
-      <text x={ox + CHAIN_EACH * 0.5 * scale} y={oy + sheetL * 0.5 * scale} textAnchor="middle" fill="#4b5c7a" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace" transform={`rotate(-90, ${ox + CHAIN_EACH * 0.5 * scale}, ${oy + sheetL * 0.5 * scale})`}>CHAIN</text>
-      <text x={ox + (sheetW - CHAIN_EACH * 0.5) * scale} y={oy + sheetL * 0.5 * scale} textAnchor="middle" fill="#4b5c7a" fontSize={fS * 0.8} fontFamily="'DM Mono', monospace" transform={`rotate(-90, ${ox + (sheetW - CHAIN_EACH * 0.5) * scale}, ${oy + sheetL * 0.5 * scale})`}>CHAIN</text>
+      <text x={ox/2} y={svgH/2} textAnchor="middle" fill={C.label} fontSize={fs*0.85} fontFamily="'JetBrains Mono',monospace" transform={`rotate(-90,${ox/2},${svgH/2})`}>CHAIN</text>
+      <text x={ox+formW*scale+ox/2} y={svgH/2} textAnchor="middle" fill={C.label} fontSize={fs*0.85} fontFamily="'JetBrains Mono',monospace" transform={`rotate(-90,${ox+formW*scale+ox/2},${svgH/2})`}>CHAIN</text>
     </svg>
   );
 }
 
-/* ── FRED PPI Panel ── */
-function FredPanel() {
-  const [fredData, setFredData] = useState(null);
-  const [fredLoading, setFredLoading] = useState(true);
-  const [fredError, setFredError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/fred")
-      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-      .then(data => {
-        if (cancelled) return;
-        const obs = data.observations;
-        if (!obs || !obs.length) throw new Error();
-        const parsed = obs
-          .filter(o => o.value !== ".")
-          .map(o => {
-            const d = new Date(o.date);
-            const label = d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-            return { date: label, value: parseFloat(o.value) };
-          })
-          .reverse();
-        if (parsed.length >= 2) setFredData(parsed);
-        else throw new Error();
-        setFredLoading(false);
-      })
-      .catch(() => { if (!cancelled) { setFredError(true); setFredLoading(false); } });
-    return () => { cancelled = true; };
-  }, []);
-
-  const source = fredData || FRED_PPI;
-  const isLive = !!fredData;
-
-  const latest = source[source.length - 1];
-  const prev = source[source.length - 2];
-  const yearAgo = source[0];
-  const moChange = latest.value - prev.value;
-  const moPct = (moChange / prev.value) * 100;
-  const yrChange = latest.value - yearAgo.value;
-  const yrPct = (yrChange / yearAgo.value) * 100;
-  const vals = source.map(d => d.value);
-  const mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1;
-  const w = 230, h = 34;
-  const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * w},${h - ((v - mn) / rng) * h}`).join(" ");
-
+/* ═══════════════════════════════════════════════════════════
+   UTILIZATION GAUGE
+═══════════════════════════════════════════════════════════ */
+function UtilGauge({ pct }) {
+  const r=52, cx=70, cy=70, startDeg=220, sweep=280;
+  const toRad = d => (d-90)*Math.PI/180;
+  const arc = (s,e) => {
+    const sr=toRad(s), er=toRad(e);
+    const x1=cx+r*Math.cos(sr),y1=cy+r*Math.sin(sr),x2=cx+r*Math.cos(er),y2=cy+r*Math.sin(er);
+    return `M ${x1} ${y1} A ${r} ${r} 0 ${e-s>180?1:0} 1 ${x2} ${y2}`;
+  };
+  const filledEnd = startDeg + sweep * Math.min(pct/100,1);
+  const color = pct>=80?"#00ff9d":pct>=60?"#00d4ff":pct>=40?"#ff9500":"#ff4455";
   return (
-    <div style={{ background: "#111827", border: "1px solid #1e293b", borderRadius: 8, padding: 12 }}>
-      <div style={{ fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-        Plastics & Resins PPI (FRED)
-        {!fredLoading && (
-          <span style={{
-            fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, letterSpacing: 0.5,
-            background: isLive ? "#064e3b" : "#1e293b",
-            color: isLive ? "#34d399" : "#94a3b8",
-            border: `1px solid ${isLive ? "#065f46" : "#334155"}`,
-          }}>
-            {isLive ? "LIVE" : "CACHED"}
-          </span>
-        )}
+    <svg width={140} height={100} viewBox="0 0 140 100">
+      <path d={arc(startDeg,startDeg+sweep)} fill="none" stroke="#0d2448" strokeWidth={10} strokeLinecap="round"/>
+      <path d={arc(startDeg,filledEnd)} fill="none" stroke={color} strokeWidth={10} strokeLinecap="round" style={{filter:`drop-shadow(0 0 4px ${color})`}}/>
+      {[0,25,50,75,100].map(t=>{
+        const a=toRad(startDeg+sweep*(t/100)-90);
+        return <line key={t} x1={cx+(r-8)*Math.cos(a)} y1={cy+(r-8)*Math.sin(a)} x2={cx+(r+2)*Math.cos(a)} y2={cy+(r+2)*Math.sin(a)} stroke="#1a4a80" strokeWidth={1.5}/>;
+      })}
+      <text x={cx} y={cy+4} textAnchor="middle" fill={color} fontSize={22} fontFamily="'Orbitron',monospace" fontWeight={700} style={{filter:`drop-shadow(0 0 6px ${color})`}}>{pct.toFixed(0)}</text>
+      <text x={cx} y={cy+18} textAnchor="middle" fill="#3d6080" fontSize={8} fontFamily="'JetBrains Mono',monospace" letterSpacing={2}>UTIL %</text>
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WEIGHT BAR
+═══════════════════════════════════════════════════════════ */
+function WeightBar({ label, value, total, color }) {
+  const pct = total > 0 ? Math.min((value/total)*100,100) : 0;
+  return (
+    <div style={{marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+        <span style={{color:"var(--text1)",fontSize:10,letterSpacing:"0.08em"}}>{label}</span>
+        <span style={{color,fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>{value.toFixed(4)} lb</span>
       </div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 3 }}>
-        <span style={{ fontSize: 22, fontWeight: 700, color: "#e2e8f0", fontFamily: "'Space Grotesk', sans-serif" }}>{latest.value.toFixed(1)}</span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: moChange <= 0 ? "#ef4444" : "#22c55e", fontFamily: "'DM Mono', monospace" }}>
-          {moChange <= 0 ? "▼" : "▲"} {Math.abs(moChange).toFixed(1)} ({moPct >= 0 ? "+" : ""}{moPct.toFixed(1)}%)
-        </span>
-      </div>
-      <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 6 }}>
-        {latest.date} | YoY: {yrPct >= 0 ? "+" : ""}{yrPct.toFixed(1)}% | Index (Dec 1980 = 100)
-      </div>
-      <svg width="100%" viewBox={`0 0 ${w} ${h + 2}`} style={{ display: "block", marginBottom: 4, maxWidth: w }}>
-        <polyline points={pts} fill="none" stroke="#4EA8DE" strokeWidth="1.5" strokeLinejoin="round" />
-        {vals.map((v, i) => <circle key={i} cx={(i / (vals.length - 1)) * w} cy={h - ((v - mn) / rng) * h} r={i === vals.length - 1 ? 2.5 : 1.5} fill={i === vals.length - 1 ? "#4EA8DE" : "#1e293b"} stroke="#4EA8DE" strokeWidth="0.5" />)}
-      </svg>
-      <div style={{ fontSize: 8.5, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
-        13-mo trend | BLS via FRED{isLive ? "" : " | Cached fallback"}
+      <div style={{height:4,background:"var(--bg4)",borderRadius:2,overflow:"hidden"}}>
+        <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2,transition:"width 0.6s cubic-bezier(0.4,0,0.2,1)",boxShadow:`0 0 6px ${color}`}}/>
       </div>
     </div>
   );
 }
 
-/* ── Cost Summary Card ── */
-function CostSummary({ hasCost, costLb, sheetWeight, scrapWeight, costPerPart, count }) {
-  if (!hasCost) {
-    return (
-      <div style={{ background: "#111827", border: "1px dashed #1e293b", borderRadius: 8, padding: "10px 14px", marginBottom: 10, textAlign: "center" }}>
-        <span style={{ fontSize: 11, color: "#475569", fontFamily: "'DM Mono', monospace" }}>Enter material $/lb for cost analysis</span>
-      </div>
-    );
-  }
-  const sheetCost = sheetWeight * costLb;
-  const scrapCost = scrapWeight * costLb;
-  const rowStyle = { display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 11, fontFamily: "'DM Mono', monospace" };
+/* ═══════════════════════════════════════════════════════════
+   LED READOUT
+═══════════════════════════════════════════════════════════ */
+function LEDReadout({ label, value, unit, color="var(--cyan)", large }) {
   return (
-    <div style={{ background: "#111827", border: "1px solid #1e293b", borderRadius: 8, padding: 14, marginBottom: 10 }}>
-      <div style={{ fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8 }}>Cost Summary</div>
-      <div style={rowStyle}><span style={{ color: "#94a3b8" }}>Material $/lb</span><span style={{ color: "#cbd5e1" }}>${costLb.toFixed(2)}</span></div>
-      <div style={rowStyle}><span style={{ color: "#94a3b8" }}>Sheet Cost</span><span style={{ color: "#cbd5e1" }}>${sheetCost.toFixed(4)}</span></div>
-      <div style={rowStyle}><span style={{ color: "#94a3b8" }}>Scrap Cost</span><span style={{ color: "#cbd5e1" }}>${scrapCost.toFixed(4)}</span></div>
-      <div style={{ borderTop: "1px solid #1e293b", marginTop: 6, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "#93c5fd", fontFamily: "'DM Mono', monospace", textTransform: "uppercase" }}>Cost / Part</span>
-        <span style={{ fontSize: 22, fontWeight: 700, color: "#22c55e", fontFamily: "'Space Grotesk', sans-serif" }}>${costPerPart.toFixed(4)}</span>
-      </div>
-      <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", textAlign: "right", marginTop: 2 }}>{count} cavities per index</div>
-    </div>
-  );
-}
-
-/* ── Stat Card ── */
-function StatCard({ label, value, unit, accent }) {
-  return (
-    <div style={{ background: "#111827", border: `1px solid ${accent || "#1e293b"}`, borderRadius: 6, padding: "9px 13px", minWidth: 90, flex: "1 1 90px" }}>
-      <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: "#e2e8f0", fontFamily: "'Space Grotesk', sans-serif" }}>
-        {value}<span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 2 }}>{unit}</span>
+    <div style={{background:"var(--bg0)",border:"1px solid var(--border)",borderTop:`2px solid ${color}`,borderRadius:6,padding:large?"14px 16px":"10px 14px",display:"flex",flexDirection:"column",gap:3,boxShadow:"0 0 12px rgba(0,0,0,0.4),inset 0 0 20px rgba(0,0,0,0.3)"}}>
+      <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.15em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase"}}>{label}</div>
+      <div style={{fontSize:large?24:18,fontFamily:"'Orbitron',monospace",fontWeight:700,color,letterSpacing:"0.05em",textShadow:`0 0 10px ${color}`}}>
+        {value}{unit&&<span style={{fontSize:large?12:10,marginLeft:4,color:"var(--text2)",fontWeight:400}}>{unit}</span>}
       </div>
     </div>
   );
 }
 
-/* ── Main App ── */
+/* ═══════════════════════════════════════════════════════════
+   FIELD + INPUT HELPERS
+═══════════════════════════════════════════════════════════ */
+function Field({ label, children }) {
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.15em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:5}}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+const iStyle = {width:"100%",padding:"9px 12px",background:"var(--bg0)",border:"1px solid var(--border)",color:"var(--text0)",borderRadius:5,outline:"none",fontFamily:"'JetBrains Mono',monospace",fontSize:13,transition:"border-color 0.15s,box-shadow 0.15s"};
+const onFocus = e=>{e.target.style.borderColor="var(--cyan-dim)";e.target.style.boxShadow="0 0 0 2px var(--cyan-glow)";};
+const onBlur  = e=>{e.target.style.borderColor="var(--border)";e.target.style.boxShadow="none";};
+
+function NInput({value,onChange,step,min,placeholder}) {
+  return <input type="number" value={value} onChange={onChange} step={step} min={min} placeholder={placeholder} onFocus={onFocus} onBlur={onBlur} style={iStyle}/>;
+}
+function SInput({value,onChange,placeholder}) {
+  return <input type="text" value={value} onChange={onChange} placeholder={placeholder} onFocus={onFocus} onBlur={onBlur} style={iStyle}/>;
+}
+function Sel({value,onChange,children}) {
+  return <select value={value} onChange={onChange} onFocus={onFocus} onBlur={onBlur} style={{...iStyle,cursor:"pointer",appearance:"auto"}}>{children}</select>;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CANVAS MODAL
+═══════════════════════════════════════════════════════════ */
+function CanvasModal({ layout, onClose, onSpacingChange }) {
+  const ref = useRef(null);
+  const [xf, setXf] = useState({x:40,y:40,scale:1});
+  const [drag,setDrag] = useState(false);
+  const last = useRef({x:0,y:0});
+  const [sp, setSp] = useState(null);
+  const lastPinch = useRef(null);
+
+  useEffect(()=>{ if(layout) setSp(layout.sp); },[layout?.sp]);
+
+  useEffect(()=>{
+    if(!ref.current||!layout) return;
+    const {clientWidth:cw,clientHeight:ch}=ref.current;
+    const sw=(layout.formW+2*CHAIN_EACH)*10, sh=layout.usedIndex*10;
+    const fit=Math.min((cw-80)/sw,(ch-120)/sh,2.5);
+    setXf({scale:fit,x:(cw-sw*fit)/2,y:(ch-sh*fit)/2+40});
+  },[layout]);
+
+  const onMD = useCallback(e=>{if(e.target.tagName==="INPUT")return;setDrag(true);last.current={x:e.clientX,y:e.clientY};},[]);
+  const onMM = useCallback(e=>{if(!drag)return;setXf(t=>({...t,x:t.x+e.clientX-last.current.x,y:t.y+e.clientY-last.current.y}));last.current={x:e.clientX,y:e.clientY};},[drag]);
+  const onMU = useCallback(()=>setDrag(false),[]);
+
+  const onWheel = useCallback(e=>{
+    e.preventDefault();
+    const f=e.deltaY<0?1.12:0.89;
+    setXf(t=>{
+      const ns=Math.max(0.15,Math.min(10,t.scale*f));
+      const rect=ref.current.getBoundingClientRect();
+      const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+      return {scale:ns,x:mx-(mx-t.x)*(ns/t.scale),y:my-(my-t.y)*(ns/t.scale)};
+    });
+  },[]);
+
+  useEffect(()=>{const el=ref.current;if(el){el.addEventListener("wheel",onWheel,{passive:false});}return()=>{if(el)el.removeEventListener("wheel",onWheel);};},[onWheel]);
+
+  const onTS = useCallback(e=>{if(e.touches.length===1){setDrag(true);last.current={x:e.touches[0].clientX,y:e.touches[0].clientY};}if(e.touches.length===2){lastPinch.current=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);}},[]);
+  const onTM = useCallback(e=>{e.preventDefault();if(e.touches.length===1&&drag){setXf(t=>({...t,x:t.x+e.touches[0].clientX-last.current.x,y:t.y+e.touches[0].clientY-last.current.y}));last.current={x:e.touches[0].clientX,y:e.touches[0].clientY};}if(e.touches.length===2&&lastPinch.current){const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);setXf(t=>({...t,scale:Math.max(0.15,Math.min(10,t.scale*(d/lastPinch.current)))}));lastPinch.current=d;}},[drag]);
+  const onTE = useCallback(()=>{setDrag(false);lastPinch.current=null;},[]);
+
+  if(!layout) return null;
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:2000,background:"rgba(2,9,18,0.96)",backdropFilter:"blur(10px)",display:"flex",flexDirection:"column"}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 20px",background:"var(--bg1)",borderBottom:"1px solid var(--border)",flexShrink:0,gap:12,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <span style={{fontFamily:"'Orbitron',monospace",fontSize:11,letterSpacing:"0.15em",color:"var(--cyan)",textTransform:"uppercase"}}>Layout Canvas</span>
+          <span style={{color:"var(--text2)",fontSize:11}}>{layout.cavities} cav · {layout.across}×{layout.down} · {layout.usedIndex.toFixed(3)}"</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,background:"var(--bg0)",border:"1px solid var(--border)",borderRadius:6,padding:"6px 12px"}}>
+            <span style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase"}}>Spacing</span>
+            <input type="number" value={sp??""} min={0.25} max={3} step={0.0625}
+              onChange={e=>{setSp(e.target.value);const v=parseFloat(e.target.value);if(!isNaN(v)&&v>=0.25)onSpacingChange(v);}}
+              style={{width:56,padding:"3px 6px",background:"var(--bg0)",border:"1px solid var(--cyan-dim)",color:"var(--cyan)",borderRadius:4,fontFamily:"'JetBrains Mono',monospace",fontSize:12,outline:"none"}}/>
+            <span style={{color:"var(--text2)",fontSize:10}}>"</span>
+          </div>
+          <div style={{display:"flex",gap:5}}>
+            {["0.5×","1×","2×","Fit"].map(z=>(
+              <button key={z} onClick={()=>{
+                if(z==="Fit"){if(!ref.current)return;const{clientWidth:cw,clientHeight:ch}=ref.current;const sw=(layout.formW+2*CHAIN_EACH)*10,sh=layout.usedIndex*10;const fit=Math.min((cw-80)/sw,(ch-120)/sh,2.5);setXf({scale:fit,x:(cw-sw*fit)/2,y:(ch-sh*fit)/2+40});}
+                else setXf(t=>({...t,scale:parseFloat(z)}));
+              }} style={{padding:"5px 10px",fontSize:10,borderRadius:4,cursor:"pointer",background:"var(--bg2)",border:"1px solid var(--border)",color:"var(--text1)",fontFamily:"'JetBrains Mono',monospace"}}>{z}</button>
+            ))}
+          </div>
+          <button onClick={onClose} style={{padding:"6px 14px",borderRadius:5,border:"1px solid #5a1a22",background:"#1a0810",color:"#ff4455",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",fontSize:12}}>✕ Close</button>
+        </div>
+      </div>
+      {/* Canvas */}
+      <div ref={ref} onMouseDown={onMD} onMouseMove={onMM} onMouseUp={onMU} onMouseLeave={onMU} onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}
+        style={{flex:1,overflow:"hidden",position:"relative",cursor:drag?"grabbing":"grab",background:"radial-gradient(ellipse at 50% 40%,#071428 0%,#020912 70%)",touchAction:"none"}}>
+        <svg style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none"}}>
+          <defs><pattern id="dotg" width={24} height={24} patternUnits="userSpaceOnUse"><circle cx={12} cy={12} r={0.8} fill="#0d2448"/></pattern></defs>
+          <rect width="100%" height="100%" fill="url(#dotg)"/>
+        </svg>
+        <div style={{position:"absolute",transform:`translate(${xf.x}px,${xf.y}px) scale(${xf.scale})`,transformOrigin:"0 0",userSelect:"none"}}>
+          <LayoutSVG layout={layout} scale={10}/>
+        </div>
+        <div style={{position:"absolute",bottom:12,left:"50%",transform:"translateX(-50%)",color:"var(--text3)",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:"0.08em",pointerEvents:"none",background:"rgba(2,9,18,0.6)",padding:"4px 12px",borderRadius:20,border:"1px solid var(--border)"}}>
+          scroll/pinch to zoom · drag to pan · adjust spacing above
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PRINT REPORT
+═══════════════════════════════════════════════════════════ */
+function PrintReport({ layout, inputs, stats }) {
+  if (!layout||!stats) return null;
+  const { formW, usedIndex, cavities, across, down, sp, spH, spV, ctcX, ctcY, marginLeft, partW, partL } = layout;
+  const now = new Date();
+  return (
+    <div id="print-report" style={{display:"none",fontFamily:"'Courier New',monospace",color:"#000",background:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"2px solid #000",paddingBottom:10,marginBottom:16}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,letterSpacing:3,textTransform:"uppercase"}}>THERMOFORM LAYOUT SHEET</div>
+          <div style={{fontSize:10,color:"#555",marginTop:2}}>{inputs.partName||"Unnamed Part"} · {inputs.material} · {(inputs.gauge*1000).toFixed(0)} thou gauge · {inputs.rotated?"Rotated 90°":"Normal orientation"}</div>
+        </div>
+        <div style={{textAlign:"right",fontSize:10,color:"#666"}}>
+          <div>{now.toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})}</div>
+          <div>{now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</div>
+        </div>
+      </div>
+      <div style={{display:"flex",justifyContent:"center",marginBottom:16}}>
+        <LayoutSVG layout={layout} scale={20} printMode={true}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20,fontSize:10}}>
+        {[
+          {title:"PART DIMENSIONS",rows:[["Width",`${inputs.partW}" (${(inputs.partW*25.4).toFixed(1)} mm)`],["Length",`${inputs.partL}" (${(inputs.partL*25.4).toFixed(1)} mm)`],["Z-Height",`${inputs.zH}"`],["Material",inputs.material],["Gauge",`${inputs.gauge}" · ${(inputs.gauge*1000).toFixed(0)} thou`]]},
+          {title:"LAYOUT",rows:[["Mold Width",`${formW}"`],["Index Length",`${usedIndex.toFixed(4)}"`],["Across × Down",`${across} × ${down}`],["Total Cavities",`${cavities}`],["C/C Horizontal",`${ctcX.toFixed(4)}"`],["C/C Vertical",`${ctcY.toFixed(4)}"`],["Spacing H",`${(layout.spH??sp).toFixed(4)}"`],["Spacing V",`${(layout.spV??sp).toFixed(4)}"`],["Edge Margin",`${marginLeft.toFixed(4)}"`]]},
+          {title:"MATERIAL & COST",rows:[["Sheet Area",`${stats.sheetArea.toFixed(3)} in²`],["Parts Area",`${stats.partsArea.toFixed(3)} in²`],["Utilization",`${stats.utilPct.toFixed(1)}%`],["Sheet Weight",`${stats.sheetLbs.toFixed(4)} lbs`],["Parts Weight",`${stats.partsLbs.toFixed(4)} lbs`],["Scrap Weight",`${stats.scrapLbs.toFixed(4)} lbs`],["$/lb",stats.pricePerLb?`$${stats.pricePerLb.toFixed(3)}`:`~$${stats.estPrice.toFixed(3)}`],["Sheet Cost",`$${stats.sheetCost.toFixed(4)}`],["Cost / Part",`$${stats.costPerPart.toFixed(4)}`]]},
+        ].map(({title,rows})=>(
+          <div key={title}>
+            <div style={{fontSize:8,fontWeight:700,letterSpacing:3,textTransform:"uppercase",borderBottom:"1px solid #000",paddingBottom:3,marginBottom:6}}>{title}</div>
+            {rows.map(([l,v])=>(
+              <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",borderBottom:"1px solid #eee"}}>
+                <span style={{color:"#555"}}>{l}</span><span style={{fontWeight:600}}>{v}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{marginTop:12,borderTop:"1px solid #ccc",paddingTop:6,fontSize:8,color:"#888",display:"flex",justifyContent:"space-between"}}>
+        <span>Thermoform Layout Optimizer</span>
+        <span>Spacing H: {(layout.spH??sp).toFixed(4)}" · V: {(layout.spV??sp).toFixed(4)}" · Margin: {marginLeft.toFixed(4)}"</span>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MAIN APP
+═══════════════════════════════════════════════════════════ */
 export default function App() {
-  const [partW, setPartW] = useState(3.0);
-  const [partL, setPartL] = useState(4.0);
-  const [zHeight, setZHeight] = useState(1.0);
-  const [materialIdx, setMaterialIdx] = useState(0);
-  const [gauge, setGauge] = useState(0.033);
-  const [gaugeText, setGaugeText] = useState("0.033");
-  const [moldWidth, setMoldWidth] = useState(26);
-  const [selectedOri, setSelectedOri] = useState("best");
-  const [costPerLb, setCostPerLb] = useState(MATERIALS[0].price.toString());
-  const [dxfInfo, setDxfInfo] = useState(null);
-  const [showInputs, setShowInputs] = useState(true);
-  const [showIndexCompare, setShowIndexCompare] = useState(false);
-  const [previewMaxIndex, setPreviewMaxIndex] = useState(null); // null = use default MAX_INDEX
-  const [spacingMode, setSpacingMode] = useState("auto"); // "auto" or "manual"
-  const [manualSpacing, setManualSpacing] = useState(null); // null = use auto, otherwise fixed value
-  const [edgeMode, setEdgeMode] = useState("auto"); // "auto" or "manual"
-  const [manualEdge, setManualEdge] = useState(null); // null = use z/2, otherwise fixed value
-  const [manualIndex, setManualIndex] = useState(null); // null = use calculated, otherwise force this index
-  const [manualIndexText, setManualIndexText] = useState(""); // For input bug fix - store raw text
-  const [forceAcross, setForceAcross] = useState(null); // null = auto, otherwise force this many across
-  const [forceDown, setForceDown] = useState(null); // null = auto, otherwise force this many down
-  const fileRef = useRef();
-  const isMobile = useIsMobile();
+  const [partName,   setPartName]   = useState("");
+  const [partWStr,   setPartWStr]   = useState("3");
+  const [partLStr,   setPartLStr]   = useState("5");
+  const [zHStr,      setZHStr]      = useState("1.5");
+  const [moldW,      setMoldW]      = useState(24);
+  const [gaugeIdx,   setGaugeIdx]   = useState(6);
+  const [matIdx,     setMatIdx]     = useState(0);
+  const [pricePerLb, setPricePerLb] = useState("");
+  const [qtyInput,   setQtyInput]   = useState("");
+  const [minGap,     setMinGap]     = useState(null);  // null = 1×Z default
+  const [indexStr,   setIndexStr]   = useState("");         // blank = MAX_INDEX (36")
+  const [modeV,      setModeV]      = useState("gaps");     // "edges" | "gaps" | "ctc"
+  const [ctcVStr,    setCtcVStr]    = useState("");          // manual c/c vertical
+  const [rotated,    setRotated]    = useState(false);
+  const [showModal,  setShowModal]  = useState(false);
+  const [isMobile,   setIsMobile]   = useState(false);
+  const [openSec,    setOpenSec]    = useState({part:true,mold:true,mat:true});
+  const [dxfStatus,  setDxfStatus]  = useState(null); // null | {ok, msg}
+  const dxfRef = useRef(null);
 
-  const material = MATERIALS[materialIdx];
-  const densityLbIn3 = material.density * GCC_TO_LBIN3;
-
-  // Calculate default layout first to get the base usedIndex for comparisons
-  const defaultLayout = useMemo(() => calcLayout(partW, partL, zHeight, moldWidth, MAX_INDEX), [partW, partL, zHeight, moldWidth]);
-  const defaultOri = (selectedOri === "best" ? defaultLayout.best : selectedOri) === "A" ? defaultLayout.orientationA : defaultLayout.orientationB;
-
-  // Use preview index if set, otherwise use default
-  const effectiveMaxIndex = manualIndex !== null ? manualIndex : (previewMaxIndex !== null ? previewMaxIndex : MAX_INDEX);
-  const effectiveSpacing = spacingMode === "manual" ? manualSpacing : null;
-  const effectiveEdge = edgeMode === "manual" ? manualEdge : null;
-  const layout = useMemo(
-    () => calcLayoutWithSpacing(partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge, forceAcross, forceDown),
-    [partW, partL, zHeight, moldWidth, effectiveMaxIndex, effectiveSpacing, effectiveEdge, forceAcross, forceDown]
-  );
-  const activeOri = selectedOri === "best" ? layout.best : selectedOri;
-  const ori = activeOri === "A" ? layout.orientationA : layout.orientationB;
-
-  const costLb = parseFloat(costPerLb) || 0;
-  const indexComparisons = useMemo(
-    () => calcIndexComparisons(partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb),
-    [partW, partL, zHeight, moldWidth, defaultOri.usedIndex, densityLbIn3, gauge, costLb]
-  );
-
-  // Reset preview when dimensions change (but keep manual overrides)
-  useEffect(() => {
-    setPreviewMaxIndex(null);
-    // Don't reset manualIndex, forceAcross, forceDown - let user keep their overrides
-  }, [partW, partL, zHeight, moldWidth]);
-
-  // Initialize manual spacing to auto value (1x z-height) when switching to manual
-  useEffect(() => {
-    if (spacingMode === "manual" && manualSpacing === null) {
-      setManualSpacing(zHeight);
-    }
-  }, [spacingMode, manualSpacing, zHeight]);
-
-  // Initialize manual edge to 1x z-height when switching to manual
-  useEffect(() => {
-    if (edgeMode === "manual" && manualEdge === null) {
-      setManualEdge(zHeight);
-    }
-  }, [edgeMode, manualEdge, zHeight]);
-
-  // Update manual values when z-height changes
-  useEffect(() => {
-    if (manualSpacing !== null) {
-      const minS = zHeight * 0.5;
-      const maxS = zHeight * 2;
-      if (manualSpacing < minS) setManualSpacing(minS);
-      if (manualSpacing > maxS) setManualSpacing(maxS);
-    }
-    if (manualEdge !== null) {
-      const minE = zHeight * 0.5;
-      const maxE = zHeight * 2;
-      if (manualEdge < minE) setManualEdge(minE);
-      if (manualEdge > maxE) setManualEdge(maxE);
-    }
-  }, [zHeight, manualSpacing, manualEdge]);
-
-  const formingArea = moldWidth * ori.usedIndex;
-  const totalSheetW = moldWidth + CHAIN_TOTAL;
-  const totalSheetArea = totalSheetW * ori.usedIndex;
-  const partArea = ori.cellW * ori.cellL;
-  const totalPartsArea = ori.count * partArea;
-  const scrapArea = formingArea - totalPartsArea;
-  const utilization = formingArea > 0 ? (totalPartsArea / formingArea) * 100 : 0;
-  const sheetWeight = totalSheetArea * gauge * densityLbIn3;
-  const partsWeight = totalPartsArea * gauge * densityLbIn3;
-  const scrapWeight = sheetWeight - partsWeight;
-  const hasCost = costPerLb !== "" && parseFloat(costPerLb) > 0;
-  const sheetCost = hasCost ? sheetWeight * costLb : 0;
-  const costPerPart = hasCost && ori.count > 0 ? sheetCost / ori.count : 0;
-
-  const handleGaugePreset = (v) => { setGauge(v); setGaugeText(v.toString()); };
-  const handleGaugeInput = (e) => { const v = e.target.value; setGaugeText(v); const n = parseFloat(v); if (!isNaN(n) && n > 0 && n < 1) setGauge(n); };
-
-  const handleDXF = (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
+  const handleDXF = useCallback(e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result;
-      if (typeof text !== "string") return;
-      const info = parseDXF(text);
-      if (info) { setDxfInfo({ ...info, fileName: file.name }); setPartL(info.totalW); setPartW(info.totalH); }
-      else setDxfInfo({ error: "Could not parse geometry from file" });
+    reader.onload = ev => {
+      try {
+        const result = parseDXF(ev.target.result);
+        if (!result) { setDxfStatus({ok:false,msg:"Could not extract geometry from this DXF."}); return; }
+        const { partW, partL, layerUsed, units, isLayout, across, down, ctcH, ctcV } = result;
+        if (partW > 0) setPartWStr(String(partW));
+        if (partL > 0) setPartLStr(String(partL));
+        setPartName(prev => prev || file.name.replace(/\.dxf$/i,""));
+        if (isLayout) {
+          // Mold layout file — report the detected grid
+          let msg = `✓ ${file.name}  part ${partW}" × ${partL}"  (${layerUsed}, ${units})`;
+          msg += `  |  ${across}×${down} grid`;
+          if (ctcH) msg += `  c/c H: ${ctcH}"`;
+          if (ctcV) msg += `  V: ${ctcV}"`;
+          setDxfStatus({ ok:true, msg, isLayout:true, across, down, ctcH, ctcV });
+        } else {
+          setDxfStatus({ ok:true, msg:`✓ ${file.name}  ${partW}" × ${partL}"  (${layerUsed}, ${units})` });
+        }
+      } catch(err) {
+        setDxfStatus({ok:false,msg:`Parse error: ${err.message}`});
+      }
     };
     reader.readAsText(file);
     e.target.value = "";
-  };
+  }, []);
 
-  // Export to CSV
-  const exportToCSV = () => {
-    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-    const rows = [
-      ["Thermoform Layout Report", timestamp],
-      [],
-      ["Part Dimensions"],
-      ["Width", ori.cellW, "in"],
-      ["Length", ori.cellL, "in"],
-      ["Z-Height", zHeight, "in"],
-      [],
-      ["Layout Configuration"],
-      ["Mold Width (Web)", moldWidth, "in"],
-      ["Index Length", ori.usedIndex, "in"],
-      ["Cavities", ori.count],
-      ["Layout", `${ori.across} x ${ori.down}`],
-      ["Orientation", activeOri === "A" ? "As Entered" : "Rotated 90°"],
-      [],
-      ["Spacing"],
-      ["Internal Spacing", (ori.actualSpacingW || ori.spacing).toFixed(3), "in"],
-      ["Edge Margin (Web)", (ori.edgeMarginW || layout.edgeMin).toFixed(3), "in"],
-      ["Edge Margin (Index)", (ori.edgeMarginL || layout.edgeMin).toFixed(3), "in"],
-      [],
-      ["Material"],
-      ["Type", material.name],
-      ["Density", material.density, "g/cc"],
-      ["Gauge", gauge, "in"],
-      [],
-      ["Area & Weight"],
-      ["Forming Area", formingArea.toFixed(2), "sq in"],
-      ["Total Parts Area", totalPartsArea.toFixed(2), "sq in"],
-      ["Scrap Area", scrapArea.toFixed(2), "sq in"],
-      ["Utilization", utilization.toFixed(1), "%"],
-      ["Sheet Weight", sheetWeight.toFixed(4), "lbs"],
-      ["Parts Weight", partsWeight.toFixed(4), "lbs"],
-      ["Scrap Weight", scrapWeight.toFixed(4), "lbs"],
-    ];
-    if (hasCost) {
-      rows.push([], ["Cost Analysis"]);
-      rows.push(["Material $/lb", costLb.toFixed(2)]);
-      rows.push(["Sheet Cost", "$" + sheetCost.toFixed(4)]);
-      rows.push(["Cost per Part", "$" + costPerPart.toFixed(4)]);
-    }
-    const csv = rows.map(r => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `thermoform-layout-${timestamp}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  useEffect(()=>{const c=()=>setIsMobile(window.innerWidth<768);c();window.addEventListener("resize",c);return()=>window.removeEventListener("resize",c);},[]);
 
-  // Print layout
-  const handlePrint = () => {
-    const printContent = `
-      <html>
-      <head>
-        <title>Thermoform Layout Report</title>
-        <style>
-          body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; color: #333; }
-          h1 { font-size: 18px; margin-bottom: 5px; }
-          h2 { font-size: 14px; color: #666; margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
-          .subtitle { font-size: 11px; color: #888; margin-bottom: 20px; }
-          table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
-          td { padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #eee; }
-          td:first-child { color: #666; width: 180px; }
-          td:last-child { font-weight: 500; }
-          .highlight { background: #f0f9ff; }
-          .section { margin-bottom: 20px; }
-          @media print { body { padding: 0; } }
-        </style>
-      </head>
-      <body>
-        <h1>Thermoform Layout Report</h1>
-        <div class="subtitle">Generated: ${new Date().toLocaleString()}</div>
+  const gauge    = GAUGES[gaugeIdx];
+  const material = MATERIALS[matIdx];
 
-        <div class="section">
-          <h2>Part Dimensions</h2>
-          <table>
-            <tr><td>Part Cut Size</td><td>${ori.cellW}" × ${ori.cellL}"</td></tr>
-            <tr><td>Z-Height</td><td>${zHeight}"</td></tr>
-          </table>
+  const layout = useMemo(()=>{
+    const w=parseFloat(partWStr),l=parseFloat(partLStr),z=parseFloat(zHStr);
+    if(!w||!l||!z||w<=0||l<=0||z<=0) return null;
+    const uq=parseInt(qtyInput,10);
+    const qty = isNaN(uq)?null:uq;
+    const idxVal=parseFloat(indexStr);
+    const maxIdx=(!isNaN(idxVal)&&idxVal>0)?Math.min(idxVal,MAX_INDEX):MAX_INDEX;
+    const [ew, el] = rotated ? [l, w] : [w, l];
+    const sopts={modeV,ctcV:parseFloat(ctcVStr)||null};
+    return calcLayout(ew, el, z, moldW, minGap, qty, maxIdx, sopts);
+  },[partWStr,partLStr,zHStr,moldW,minGap,qtyInput,rotated,indexStr,modeV,ctcVStr]);
+
+  // Compute both orientations for comparison badge
+  const bothLayouts = useMemo(()=>{
+    const w=parseFloat(partWStr),l=parseFloat(partLStr),z=parseFloat(zHStr);
+    if(!w||!l||!z||w<=0||l<=0||z<=0) return null;
+    const uq=parseInt(qtyInput,10); const qty=isNaN(uq)?null:uq;
+    const idxVal=parseFloat(indexStr);
+    const maxIdx=(!isNaN(idxVal)&&idxVal>0)?Math.min(idxVal,MAX_INDEX):MAX_INDEX;
+    const sopts={modeV,ctcV:parseFloat(ctcVStr)||null};
+    const normal  = calcLayout(w, l, z, moldW, minGap, qty, maxIdx, sopts);
+    const flipped = calcLayout(l, w, z, moldW, minGap, qty, maxIdx, sopts);
+    return { normal, flipped };
+  },[partWStr,partLStr,zHStr,moldW,minGap,qtyInput,indexStr,modeV,ctcVStr]);
+
+  const stats = useMemo(()=>{
+    if(!layout) return null;
+    const {formW,usedIndex,cavities,partW:pw,partL:pl}=layout;
+    const sheetArea=formW*usedIndex, partsArea=cavities*pw*pl, scrapArea=sheetArea-partsArea;
+    const utilPct=(partsArea/sheetArea)*100;
+    const density=material.density*GCC_TO_LIN3;
+    const sheetLbs=sheetArea*gauge*density, partsLbs=partsArea*gauge*density, scrapLbs=sheetLbs-partsLbs;
+    const ppl=parseFloat(pricePerLb), eff=isNaN(ppl)?material.price:ppl;
+    const sheetCost=sheetLbs*eff, costPerPart=sheetCost/cavities;
+    return {sheetArea,partsArea,scrapArea,utilPct,sheetLbs,partsLbs,scrapLbs,sheetCost,costPerPart,pricePerLb:isNaN(ppl)?null:ppl,estPrice:eff};
+  },[layout,gauge,material,pricePerLb]);
+
+  const thumbScale = useMemo(()=>{
+    if(!layout) return 3;
+    return Math.min((isMobile?window.innerWidth-48:300)/(layout.formW+2*CHAIN_EACH), 360/layout.usedIndex, 8);
+  },[layout,isMobile]);
+
+  const inputs={partName,material:material.name,gauge,partW:parseFloat(partWStr)||0,partL:parseFloat(partLStr)||0,zH:parseFloat(zHStr)||0,rotated,indexOverride:indexStr||null,modeV};
+
+  const cardStyle = (accentColor="var(--cyan-dim)") => ({
+    background:"var(--bg1)",border:"1px solid var(--border)",
+    borderTop:`2px solid ${accentColor}`,borderRadius:8,padding:"14px",marginBottom:12,
+  });
+
+  const sections = [
+    {key:"part",title:"Part Definition",accent:"var(--cyan-dim)",content:(
+      <>
+        {/* DXF Upload */}
+        <input ref={dxfRef} type="file" accept=".dxf" onChange={handleDXF} style={{display:"none"}}/>
+        <button onClick={()=>dxfRef.current?.click()} style={{
+          width:"100%",marginBottom:10,padding:"8px 12px",
+          background:"var(--bg0)",border:"1px dashed var(--cyan-dim)",
+          color:"var(--cyan)",borderRadius:5,cursor:"pointer",
+          fontFamily:"'JetBrains Mono',monospace",fontSize:11,
+          display:"flex",alignItems:"center",justifyContent:"center",gap:7,
+          transition:"border-color 0.15s,background 0.15s",
+        }}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--cyan)";e.currentTarget.style.background="var(--cyan-glow)";}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--cyan-dim)";e.currentTarget.style.background="var(--bg0)";}}>
+          ⬆ Upload DXF  <span style={{color:"var(--text2)",fontSize:10}}>(auto-fills dimensions)</span>
+        </button>
+        {dxfStatus && (
+          <div style={{
+            fontSize:10,padding:"6px 10px",borderRadius:5,marginBottom:10,
+            background: dxfStatus.ok ? "rgba(0,255,157,0.08)" : "rgba(255,68,85,0.08)",
+            border: `1px solid ${dxfStatus.ok ? "var(--green-dim)" : "#5a1a22"}`,
+            color: dxfStatus.ok ? "var(--green)" : "var(--red)",
+            fontFamily:"'JetBrains Mono',monospace",wordBreak:"break-all",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:6}}>
+              <span>{dxfStatus.msg}</span>
+              <span onClick={()=>setDxfStatus(null)} style={{cursor:"pointer",opacity:0.6,flexShrink:0}}>✕</span>
+            </div>
+            {dxfStatus.isLayout && (
+              <div style={{marginTop:6,display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}}>
+                <div style={{background:"rgba(0,212,255,0.06)",borderRadius:3,padding:"3px 6px"}}>
+                  <span style={{color:"var(--text2)"}}>grid </span>
+                  <span style={{color:"var(--cyan)"}}>{dxfStatus.across} × {dxfStatus.down}</span>
+                </div>
+                {dxfStatus.ctcH&&<div style={{background:"rgba(0,212,255,0.06)",borderRadius:3,padding:"3px 6px"}}>
+                  <span style={{color:"var(--text2)"}}>c/c H </span>
+                  <span style={{color:"var(--cyan)"}}>{dxfStatus.ctcH}"</span>
+                </div>}
+                {dxfStatus.ctcV&&<div style={{background:"rgba(0,212,255,0.06)",borderRadius:3,padding:"3px 6px"}}>
+                  <span style={{color:"var(--text2)"}}>c/c V </span>
+                  <span style={{color:"var(--cyan)"}}>{dxfStatus.ctcV}"</span>
+                </div>}
+              </div>
+            )}
+          </div>
+        )}
+        <Field label="Part Name / Job #"><SInput value={partName} onChange={e=>setPartName(e.target.value)} placeholder="e.g. Tray-7 Rev2"/></Field>
+        <Field label="Width (in)"><NInput value={partWStr} onChange={e=>setPartWStr(e.target.value)} step={0.0625}/></Field>
+        <Field label="Length (in)"><NInput value={partLStr} onChange={e=>setPartLStr(e.target.value)} step={0.0625}/></Field>
+        <Field label="Z-Height / Draw Depth (in)"><NInput value={zHStr} onChange={e=>setZHStr(e.target.value)} step={0.0625} min={0.1}/></Field>
+
+        {/* Orientation toggle */}
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.15em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:6}}>Orientation</div>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={()=>setRotated(false)} style={{
+              flex:1,padding:"8px 6px",borderRadius:5,cursor:"pointer",fontSize:10,
+              fontFamily:"'JetBrains Mono',monospace",transition:"all 0.15s",
+              background: !rotated ? "rgba(0,212,255,0.12)" : "var(--bg0)",
+              border: !rotated ? "1px solid var(--cyan)" : "1px solid var(--border)",
+              color: !rotated ? "var(--cyan)" : "var(--text2)",
+              boxShadow: !rotated ? "0 0 8px var(--cyan-glow)" : "none",
+            }}>
+              <div style={{fontSize:14,marginBottom:2}}>▭</div>
+              <div>W × L</div>
+              {bothLayouts && <div style={{fontSize:9,color:!rotated?"var(--cyan)":"var(--text3)",marginTop:2}}>{bothLayouts.normal.cavities} cav</div>}
+            </button>
+            <button onClick={()=>setRotated(true)} style={{
+              flex:1,padding:"8px 6px",borderRadius:5,cursor:"pointer",fontSize:10,
+              fontFamily:"'JetBrains Mono',monospace",transition:"all 0.15s",
+              background: rotated ? "rgba(0,212,255,0.12)" : "var(--bg0)",
+              border: rotated ? "1px solid var(--cyan)" : "1px solid var(--border)",
+              color: rotated ? "var(--cyan)" : "var(--text2)",
+              boxShadow: rotated ? "0 0 8px var(--cyan-glow)" : "none",
+            }}>
+              <div style={{fontSize:14,marginBottom:2}}>▯</div>
+              <div>L × W <span style={{fontSize:9,opacity:0.6}}>rotated</span></div>
+              {bothLayouts && <div style={{fontSize:9,color:rotated?"var(--cyan)":"var(--text3)",marginTop:2}}>{bothLayouts.flipped.cavities} cav</div>}
+            </button>
+          </div>
+          {/* Best-orientation hint */}
+          {bothLayouts && bothLayouts.normal.cavities !== bothLayouts.flipped.cavities && (
+            <div style={{
+              marginTop:6,padding:"5px 10px",borderRadius:4,fontSize:10,
+              fontFamily:"'JetBrains Mono',monospace",
+              background:"rgba(0,255,157,0.06)",border:"1px solid var(--green-dim)",color:"var(--green)",
+            }}>
+              {bothLayouts.normal.cavities > bothLayouts.flipped.cavities
+                ? `▭ W×L gives +${bothLayouts.normal.cavities - bothLayouts.flipped.cavities} more cav`
+                : `▯ Rotated gives +${bothLayouts.flipped.cavities - bothLayouts.normal.cavities} more cav`}
+            </div>
+          )}
+          {bothLayouts && bothLayouts.normal.cavities === bothLayouts.flipped.cavities && (
+            <div style={{marginTop:6,padding:"5px 10px",borderRadius:4,fontSize:10,fontFamily:"'JetBrains Mono',monospace",background:"var(--bg0)",border:"1px solid var(--border)",color:"var(--text2)"}}>
+              Both orientations yield {bothLayouts.normal.cavities} cav
+            </div>
+          )}
         </div>
 
-        <div class="section">
-          <h2>Layout Configuration</h2>
-          <table>
-            <tr class="highlight"><td>Cavities</td><td>${ori.count} (${ori.across} × ${ori.down})</td></tr>
-            <tr><td>Mold Width (Web)</td><td>${moldWidth}"</td></tr>
-            <tr><td>Index Length</td><td>${ori.usedIndex}"</td></tr>
-            <tr><td>Orientation</td><td>${activeOri === "A" ? "As Entered" : "Rotated 90°"}</td></tr>
-          </table>
-        </div>
+      </>
+    )},
+    {key:"mold",title:"Mold Setup",accent:"var(--border-hi)",content:(
+      <>
+        <Field label="Mold Width (in)"><Sel value={moldW} onChange={e=>setMoldW(Number(e.target.value))}>{WEB_WIDTHS.map(w=><option key={w} value={w}>{w}"</option>)}</Sel></Field>
+        <Field label="Index Length (in)">
+          <Sel value={indexStr||"36"} onChange={e=>setIndexStr(e.target.value==="36"?"":e.target.value)}>
+            {Array.from({length:21},(_,i)=>16+i).map(v=>(
+              <option key={v} value={v}>{v}"{v===36?" (max)":v===16?" (min)":""}</option>
+            ))}
+          </Sel>
+        </Field>
+        <Field label="Cavity Qty (blank = max)">
+          <div style={{display:"flex",gap:6}}>
+            <NInput value={qtyInput} onChange={e=>setQtyInput(e.target.value)} placeholder={layout?`max ${layout.maxCavities}`:"auto"} step={1} min={1}/>
+            {qtyInput&&<button onClick={()=>setQtyInput("")} style={{padding:"0 12px",background:"var(--bg0)",border:"1px solid var(--border)",color:"var(--text1)",borderRadius:5,cursor:"pointer",fontSize:13}}>✕</button>}
+          </div>
+          {layout&&qtyInput&&<div style={{fontSize:10,color:"var(--text2)",marginTop:4}}>max {layout.maxCavities} available</div>}
+        </Field>
+        <Field label={`Min Gap (in)  —  default: 1× Z = ${parseFloat(zHStr)>0?parseFloat(zHStr).toFixed(4):"Z"}`}>
+          <div style={{display:"flex",gap:6}}>
+            <NInput value={minGap??""} onChange={e=>{const v=parseFloat(e.target.value);setMinGap(isNaN(v)?null:v);}} step={0.0625} min={0.125} placeholder={parseFloat(zHStr)>0?parseFloat(zHStr).toFixed(4):"auto"}/>
+            {minGap!=null&&<button onClick={()=>setMinGap(null)} style={{padding:"0 12px",background:"var(--bg0)",border:"1px solid var(--border)",color:"var(--text1)",borderRadius:5,cursor:"pointer",fontSize:13}}>✕</button>}
+          </div>
+          {minGap!=null&&<div style={{fontSize:10,color:"var(--text2)",marginTop:3}}>overriding 1× Z-height default</div>}
+        </Field>
 
-        <div class="section">
-          <h2>Spacing</h2>
-          <table>
-            <tr><td>Internal Spacing</td><td>${(ori.actualSpacingW || ori.spacing).toFixed(3)}"</td></tr>
-            <tr><td>Edge Margin (Web)</td><td>${(ori.edgeMarginW || layout.edgeMin).toFixed(3)}"</td></tr>
-            <tr><td>Edge Margin (Index)</td><td>${(ori.edgeMarginL || layout.edgeMin).toFixed(3)}"</td></tr>
-          </table>
-        </div>
+        {/* ── Vertical Spacing Mode ── */}
+        <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:4}}>
+          <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:8}}>
+            Vertical — distribute extra space to
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:8}}>
+            {[
+              {id:"edges", label:"Edges",    desc:"gap=1×Z, surplus→top/bottom"},
+              {id:"gaps",  label:"Gaps",     desc:"edge=1×Z, surplus→between rows"},
+              {id:"ctc",   label:"Set C/C",  desc:"enter exact vertical c/c"},
+            ].map(({id,label,desc})=>(
+              <button key={id} onClick={()=>setModeV(id)} style={{
+                padding:"7px 10px",borderRadius:5,cursor:"pointer",textAlign:"left",
+                fontFamily:"'JetBrains Mono',monospace",fontSize:10,
+                background: modeV===id ? "rgba(0,212,255,0.1)" : "var(--bg0)",
+                border: modeV===id ? "1px solid var(--cyan)" : "1px solid var(--border)",
+                color: modeV===id ? "var(--cyan)" : "var(--text2)",
+                display:"flex",justifyContent:"space-between",alignItems:"center",
+                transition:"all 0.12s",
+              }}>
+                <span>{label}</span>
+                <span style={{fontSize:9,opacity:0.6}}>{desc}</span>
+              </button>
+            ))}
+          </div>
 
-        <div class="section">
-          <h2>Material</h2>
-          <table>
-            <tr><td>Type</td><td>${material.name}</td></tr>
-            <tr><td>Density</td><td>${material.density} g/cc</td></tr>
-            <tr><td>Gauge</td><td>${gauge}"</td></tr>
-          </table>
-        </div>
+          {/* C/C input — only shown in ctc mode */}
+          {modeV==="ctc" && (
+            <div style={{marginBottom:8}}>
+              <NInput
+                value={ctcVStr}
+                onChange={e=>setCtcVStr(e.target.value)}
+                step={0.0625} min={0.1}
+                placeholder={layout ? `min ${(layout.partL + (layout.spV??layout.sp)).toFixed(4)}"` : "vertical c/c in"}
+              />
+              {layout && ctcVStr && (()=>{
+                const ctcVal = parseFloat(ctcVStr);
+                const gap = ctcVal - layout.partL;
+                return !isNaN(ctcVal) ? (
+                  gap > 0
+                    ? <div style={{fontSize:10,color:"var(--text2)",marginTop:3}}>gap = {gap.toFixed(4)}"</div>
+                    : <div style={{fontSize:10,color:"var(--red)",marginTop:3}}>c/c must exceed part length ({layout.partL}")</div>
+                ) : null;
+              })()}
+            </div>
+          )}
 
-        <div class="section">
-          <h2>Area & Weight</h2>
-          <table>
-            <tr><td>Forming Area</td><td>${formingArea.toFixed(2)} sq in</td></tr>
-            <tr><td>Total Parts Area</td><td>${totalPartsArea.toFixed(2)} sq in</td></tr>
-            <tr><td>Scrap Area</td><td>${scrapArea.toFixed(2)} sq in</td></tr>
-            <tr class="highlight"><td>Utilization</td><td>${utilization.toFixed(1)}%</td></tr>
-            <tr><td>Sheet Weight</td><td>${sheetWeight.toFixed(4)} lbs</td></tr>
-            <tr><td>Parts Weight</td><td>${partsWeight.toFixed(4)} lbs</td></tr>
-            <tr><td>Scrap Weight</td><td>${scrapWeight.toFixed(4)} lbs</td></tr>
-          </table>
-        </div>
+          {/* Live readout */}
+          {layout && (
+            <div style={{
+              display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,
+              fontSize:10,fontFamily:"'JetBrains Mono',monospace",
+            }}>
+              {[
+                ["gap",  (layout.spV??layout.sp).toFixed(4)+'"',  "var(--cyan)"],
+                ["edge", (layout.edgeV??layout.sp).toFixed(4)+'"',"var(--cyan)"],
+                ["c/c",  layout.ctcY.toFixed(4)+'"',              "var(--green)"],
+              ].map(([lbl,val,col])=>(
+                <div key={lbl} style={{background:"var(--bg0)",borderRadius:4,padding:"5px 6px",border:"1px solid var(--bg4)",textAlign:"center"}}>
+                  <div style={{color:"var(--text2)",fontSize:8,marginBottom:2}}>{lbl}</div>
+                  <div style={{color:col,fontSize:11}}>{val}</div>
+                </div>
+              ))}
+            </div>
+          )}
 
-        ${hasCost ? `
-        <div class="section">
-          <h2>Cost Analysis</h2>
-          <table>
-            <tr><td>Material $/lb</td><td>$${costLb.toFixed(2)}</td></tr>
-            <tr><td>Sheet Cost</td><td>$${sheetCost.toFixed(4)}</td></tr>
-            <tr class="highlight"><td>Cost per Part</td><td>$${costPerPart.toFixed(4)}</td></tr>
-          </table>
+          {/* Horizontal info (read-only) */}
+          {layout && (
+            <div style={{marginTop:8,padding:"6px 8px",background:"var(--bg0)",borderRadius:4,border:"1px solid var(--bg4)"}}>
+              <div style={{fontSize:8,color:"var(--text3)",letterSpacing:"0.1em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:4}}>Horizontal (auto)</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,fontSize:10,fontFamily:"'JetBrains Mono',monospace",textAlign:"center"}}>
+                <div><div style={{color:"var(--text3)",fontSize:8}}>gap</div><div style={{color:"var(--text1)"}}>{(layout.spH??layout.sp).toFixed(4)}"</div></div>
+                <div><div style={{color:"var(--text3)",fontSize:8}}>edge</div><div style={{color:"var(--text1)"}}>{(layout.edgeH??layout.sp).toFixed(4)}"</div></div>
+                <div><div style={{color:"var(--text3)",fontSize:8}}>c/c</div><div style={{color:"var(--text1)"}}>{layout.ctcX.toFixed(4)}"</div></div>
+              </div>
+            </div>
+          )}
         </div>
-        ` : ""}
-
-        <div style="margin-top: 30px; font-size: 10px; color: #999; text-align: center;">
-          Louis A. Nelson, Inc. — Thermoform Layout Optimizer
-        </div>
-      </body>
-      </html>
-    `;
-    const printWindow = window.open("", "_blank");
-    printWindow.document.write(printContent);
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => { printWindow.print(); }, 250);
-  };
-
-  const mobileToggle = isMobile ? (
-    <button onClick={() => setShowInputs(!showInputs)}
-      style={{ padding: "8px 14px", fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: showInputs ? "#334155" : "#1e3a5f", border: `1px solid ${showInputs ? "#64748b" : "#4EA8DE"}`, color: showInputs ? "#e2e8f0" : "#93c5fd", borderRadius: 6, cursor: "pointer" }}>
-      {showInputs ? "▼ Hide Inputs" : "▶ Show Inputs"}
-    </button>
-  ) : null;
+      </>
+    )},
+    {key:"mat",title:"Material",accent:"var(--green-dim)",content:(
+      <>
+        <Field label="Material Type"><Sel value={matIdx} onChange={e=>setMatIdx(Number(e.target.value))}>{MATERIALS.map((m,i)=><option key={m.name} value={i}>{m.name} (ρ={m.density})</option>)}</Sel></Field>
+        <Field label="Gauge"><Sel value={gaugeIdx} onChange={e=>setGaugeIdx(Number(e.target.value))}>{GAUGES.map((g,i)=><option key={g} value={i}>{g.toFixed(3)}" · {(g*1000).toFixed(0)} thou · {(g*25.4).toFixed(2)} mm</option>)}</Sel></Field>
+        <Field label="Material Price ($/lb)"><NInput value={pricePerLb} onChange={e=>setPricePerLb(e.target.value)} step={0.01} min={0} placeholder={`est. $${material.price.toFixed(2)}/lb`}/></Field>
+      </>
+    )},
+  ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#080d19", color: "#e2e8f0", fontFamily: "'Space Grotesk', sans-serif" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-        *, *::before, *::after { box-sizing: border-box; }
-        body { margin: 0; padding: 0; background: #080d19; -webkit-tap-highlight-color: transparent; }
-        input[type=number]::-webkit-inner-spin-button { opacity: 1; }
-      `}</style>
+    <>
+      <InjectCSS/>
+      {layout&&stats&&<PrintReport layout={layout} inputs={inputs} stats={stats}/>}
+      {showModal&&<CanvasModal layout={layout} onClose={()=>setShowModal(false)} onSpacingChange={v=>setMinGap(v)}/>}
 
-      {/* Header */}
-      <div style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)", borderBottom: "1px solid #1e293b", padding: isMobile ? "12px 14px" : "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontSize: isMobile ? 15 : 17, fontWeight: 700, letterSpacing: -0.5, color: "#f1f5f9" }}>THERMOFORM LAYOUT</div>
-          <div style={{ fontSize: 10, color: "#64748b", fontFamily: "'DM Mono', monospace", marginTop: 1 }}>Cavity layout • material • cost</div>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {mobileToggle}
-          <button onClick={() => fileRef.current?.click()} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #4EA8DE", color: "#93c5fd", borderRadius: 6, cursor: "pointer" }}>
-            ⬆ DXF
-          </button>
-          <button onClick={exportToCSV} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #22c55e", color: "#86efac", borderRadius: 6, cursor: "pointer" }}>
-            ⬇ CSV
-          </button>
-          <button onClick={handlePrint} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace", background: "#1e3a5f", border: "1px solid #a855f7", color: "#d8b4fe", borderRadius: 6, cursor: "pointer" }}>
-            🖨 Print
-          </button>
-        </div>
-        <input ref={fileRef} type="file" accept=".dxf" onChange={handleDXF} style={{ display: "none" }} />
-      </div>
+      <div style={{display:"flex",flexDirection:"column",height:"100vh",overflow:"hidden"}}>
 
-      {/* DXF banner */}
-      {dxfInfo && !dxfInfo.error && (
-        <div style={{ background: "#0f2b1a", borderBottom: "1px solid #166534", padding: "6px 14px", fontSize: 10, fontFamily: "'DM Mono', monospace", color: "#86efac", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span>✓ {dxfInfo.fileName || "DXF"}</span>
-          <span>X: {dxfInfo.totalW}" → Length</span>
-          <span>Y: {dxfInfo.totalH}" → Width</span>
-          <span style={{ color: "#4ade80", cursor: "pointer", marginLeft: "auto" }} onClick={() => setDxfInfo(null)}>✕</span>
-        </div>
-      )}
-      {dxfInfo?.error && (
-        <div style={{ background: "#2b0f0f", borderBottom: "1px solid #7f1d1d", padding: "6px 14px", fontSize: 10, fontFamily: "'DM Mono', monospace", color: "#fca5a5" }}>✕ {dxfInfo.error}</div>
-      )}
-
-      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row" }}>
-        {/* INPUT PANEL */}
-        {(!isMobile || showInputs) && (
-          <div style={{
-            width: isMobile ? "100%" : 300,
-            minWidth: isMobile ? "auto" : 260,
-            flexShrink: 0,
-            background: "#0f172a",
-            borderRight: isMobile ? "none" : "1px solid #1e293b",
-            borderBottom: isMobile ? "1px solid #1e293b" : "none",
-            padding: isMobile ? "12px 14px" : "14px 16px",
-            overflowY: isMobile ? "visible" : "auto",
-            maxHeight: isMobile ? "none" : "calc(100vh - 56px)",
-          }}>
-            <SL>Part Cut Size</SL>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 6 }}>
-              <IF label="Width" value={partW} onChange={setPartW} suffix='"' step={0.0625} min={0.25} />
-              <IF label="Length" value={partL} onChange={setPartL} suffix='"' step={0.0625} min={0.25} />
-              <IF label="Z-Height" value={zHeight} onChange={setZHeight} suffix='"' step={0.125} min={0} />
+        {/* ── HEADER ── */}
+        <header style={{height:52,flexShrink:0,background:"linear-gradient(90deg,#020912 0%,#071428 50%,#020912 100%)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",inset:0,pointerEvents:"none",backgroundImage:"repeating-linear-gradient(0deg,rgba(0,212,255,0.018) 0px,transparent 1px,transparent 3px)",backgroundSize:"100% 4px"}}/>
+          <div style={{display:"flex",alignItems:"center",gap:12,zIndex:1}}>
+            <div style={{width:34,height:34,background:"linear-gradient(135deg,rgba(0,212,255,0.12),rgba(0,212,255,0.25))",border:"1px solid var(--cyan-dim)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"var(--cyan)",boxShadow:"0 0 12px var(--cyan-glow)"}}>⬡</div>
+            <div>
+              <div style={{fontFamily:"'Orbitron',monospace",fontWeight:700,fontSize:isMobile?11:13,letterSpacing:"0.08em",color:"var(--text0)"}}>
+                THERMOFORM<span style={{color:"var(--cyan)",marginLeft:8,fontWeight:400,letterSpacing:"0.15em"}}>OPTIMIZER</span>
+              </div>
+              {!isMobile&&<div style={{fontSize:9,color:"var(--text3)",letterSpacing:"0.15em",fontFamily:"'JetBrains Mono',monospace"}}>CAVITY LAYOUT · MATERIAL ANALYSIS · COST ENGINE</div>}
             </div>
-            <SL>Part Spacing</SL>
-            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-              <button
-                onClick={() => { setSpacingMode("auto"); setManualSpacing(null); }}
-                style={{
-                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
-                  background: spacingMode === "auto" ? "#1e3a5f" : "#1e293b",
-                  border: `1px solid ${spacingMode === "auto" ? "#4EA8DE" : "#334155"}`,
-                  color: spacingMode === "auto" ? "#4EA8DE" : "#94a3b8",
-                  borderRadius: 4, cursor: "pointer"
-                }}>
-                Auto
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",zIndex:1}}>
+            {layout&&<>
+              <button onClick={()=>setShowModal(true)} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--cyan-dim)",background:"var(--cyan-glow)",color:"var(--cyan)",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",fontSize:11,display:"flex",alignItems:"center",gap:5,transition:"all 0.15s"}}>
+                ⊞ {isMobile?"Canvas":"Open Canvas"}
               </button>
-              <button
-                onClick={() => { setSpacingMode("manual"); if (manualSpacing === null) setManualSpacing(ori.spacing); }}
-                style={{
-                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
-                  background: spacingMode === "manual" ? "#1e3a5f" : "#1e293b",
-                  border: `1px solid ${spacingMode === "manual" ? "#4EA8DE" : "#334155"}`,
-                  color: spacingMode === "manual" ? "#4EA8DE" : "#94a3b8",
-                  borderRadius: 4, cursor: "pointer"
-                }}>
-                Manual
+              <button onClick={()=>window.print()} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text1)",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>
+                🖨{!isMobile&&" Print"}
               </button>
-            </div>
-            {spacingMode === "manual" && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <input
-                    type="range"
-                    min={zHeight * 0.5}
-                    max={zHeight * 2}
-                    step={0.001}
-                    value={manualSpacing || zHeight}
-                    onChange={(e) => setManualSpacing(parseFloat(e.target.value))}
-                    style={{ flex: 1, accentColor: "#4EA8DE" }}
-                  />
-                  <input
-                    type="number"
-                    value={(manualSpacing || zHeight).toFixed(3)}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      if (!isNaN(v) && v >= 0) setManualSpacing(v);
-                    }}
-                    step={0.0625}
-                    min={0}
-                    style={{ ...inpS, width: 70, padding: "4px 6px", fontSize: 12, textAlign: "right" }}
-                  />
-                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>"</span>
+              <button onClick={()=>{
+                if(!layout||!stats) return;
+                const csv = buildCSV(layout, {partName,material:material.name,gauge,partW:parseFloat(partWStr)||0,partL:parseFloat(partLStr)||0,zH:parseFloat(zHStr)||0}, stats);
+                const fname = (partName||"layout").replace(/[^a-z0-9_-]/gi,"_")+".csv";
+                downloadCSV(csv, fname);
+              }} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--green-dim)",background:"rgba(0,255,157,0.06)",color:"var(--green)",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>
+                ⬇{!isMobile&&" CSV"}
+              </button>
+            </>}
+          </div>
+        </header>
+
+        {/* ── BODY ── */}
+        {isMobile ? (
+          <div style={{flex:1,overflowY:"auto"}}>
+            {/* Mobile: sections as accordions */}
+            {sections.map(({key,title,accent,content})=>(
+              <div key={key} className="mob-section">
+                <div className="mob-section-header" style={{borderLeft:`3px solid ${accent}`}} onClick={()=>setOpenSec(s=>({...s,[key]:!s[key]}))}>
+                  <span>{title}</span>
+                  <span style={{color:"var(--text2)",fontSize:14}}>{openSec[key]?"▲":"▼"}</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
-                  <span>{(zHeight * 0.5).toFixed(3)}" (0.5z)</span>
-                  <span>{zHeight.toFixed(3)}" (1z default)</span>
-                  <span>{(zHeight * 2).toFixed(3)}" (2z)</span>
+                {openSec[key]&&<div style={{padding:"12px 16px"}}>{content}</div>}
+              </div>
+            ))}
+
+            {/* Results */}
+            {layout&&stats&&(
+              <div style={{padding:12}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}} className="panel-anim">
+                  <LEDReadout label="Cavities" value={layout.cavities} color="var(--cyan)" large/>
+                  <LEDReadout label="Index" value={layout.usedIndex.toFixed(3)} unit={`"`} color="var(--cyan)" large/>
+                  <LEDReadout label="C/C Horiz" value={layout.ctcX.toFixed(4)} unit={`"`} color="var(--green)"/>
+                  <LEDReadout label="C/C Vert"  value={layout.ctcY.toFixed(4)} unit={`"`} color="var(--green)"/>
                 </div>
+                <div style={{...cardStyle(),cursor:"pointer",marginBottom:12}} className="layout-thumb" onClick={()=>setShowModal(true)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <span style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--cyan)",textTransform:"uppercase"}}>Layout</span>
+                    <span style={{fontSize:10,color:"var(--text2)"}}>⊞ tap to expand</span>
+                  </div>
+                  <LayoutSVG layout={layout} scale={thumbScale}/>
+                </div>
+                <div style={{...cardStyle("var(--green-dim)"),marginBottom:12}}>
+                  <div style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--green)",textTransform:"uppercase",marginBottom:12}}>Material Utilization</div>
+                  <div style={{display:"flex",alignItems:"center",gap:16}}>
+                    <UtilGauge pct={stats.utilPct}/>
+                    <div style={{flex:1}}>
+                      <WeightBar label="PARTS" value={stats.partsLbs} total={stats.sheetLbs} color="var(--green)"/>
+                      <WeightBar label="SCRAP" value={stats.scrapLbs} total={stats.sheetLbs} color="var(--amber)"/>
+                    </div>
+                  </div>
+                </div>
+                <LEDReadout label="Cost / Part" value={`$${stats.costPerPart.toFixed(4)}`} color="var(--amber)" large/>
               </div>
             )}
-            <SL>Edge Margin</SL>
-            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-              <button
-                onClick={() => { setEdgeMode("auto"); setManualEdge(null); }}
-                style={{
-                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
-                  background: edgeMode === "auto" ? "#1e3a5f" : "#1e293b",
-                  border: `1px solid ${edgeMode === "auto" ? "#4EA8DE" : "#334155"}`,
-                  color: edgeMode === "auto" ? "#4EA8DE" : "#94a3b8",
-                  borderRadius: 4, cursor: "pointer"
-                }}>
-                Auto (1x z)
-              </button>
-              <button
-                onClick={() => { setEdgeMode("manual"); if (manualEdge === null) setManualEdge(zHeight); }}
-                style={{
-                  flex: 1, padding: "6px 10px", fontSize: 11, fontWeight: 600, fontFamily: "'DM Mono', monospace",
-                  background: edgeMode === "manual" ? "#1e3a5f" : "#1e293b",
-                  border: `1px solid ${edgeMode === "manual" ? "#4EA8DE" : "#334155"}`,
-                  color: edgeMode === "manual" ? "#4EA8DE" : "#94a3b8",
-                  borderRadius: 4, cursor: "pointer"
-                }}>
-                Manual
-              </button>
+          </div>
+        ) : (
+          <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+            {/* Desktop left panel */}
+            <div style={{width:274,flexShrink:0,background:"var(--bg0)",borderRight:"1px solid var(--border)",overflowY:"auto",padding:"14px 12px"}}>
+              {sections.map(({key,title,accent,content})=>(
+                <div key={key} style={cardStyle(accent)}>
+                  <div style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--cyan)",textTransform:"uppercase",marginBottom:12}}>{title}</div>
+                  {content}
+                </div>
+              ))}
             </div>
-            {edgeMode === "manual" && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <input
-                    type="range"
-                    min={zHeight * 0.5}
-                    max={zHeight * 2}
-                    step={0.001}
-                    value={manualEdge || zHeight}
-                    onChange={(e) => setManualEdge(parseFloat(e.target.value))}
-                    style={{ flex: 1, accentColor: "#f59e0b" }}
-                  />
-                  <input
-                    type="number"
-                    value={(manualEdge || zHeight).toFixed(3)}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      if (!isNaN(v) && v >= 0) setManualEdge(v);
-                    }}
-                    step={0.0625}
-                    min={0}
-                    style={{ ...inpS, width: 70, padding: "4px 6px", fontSize: 12, textAlign: "right" }}
-                  />
-                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>"</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#475569", fontFamily: "'DM Mono', monospace" }}>
-                  <span>{(zHeight * 0.5).toFixed(3)}" (0.5z)</span>
-                  <span>{zHeight.toFixed(3)}" (1z default)</span>
-                  <span>{(zHeight * 2).toFixed(3)}" (2z)</span>
-                </div>
-              </div>
-            )}
 
-            <SL>Override Index</SL>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-              <input
-                type="text"
-                inputMode="numeric"
-                placeholder="Auto"
-                value={manualIndexText}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setManualIndexText(v);
-                  if (v === "") {
-                    setManualIndex(null);
-                  } else {
-                    const n = parseInt(v);
-                    if (!isNaN(n) && n >= 1 && n <= MAX_INDEX) {
-                      setManualIndex(n);
-                    }
-                  }
-                }}
-                onBlur={(e) => {
-                  const v = e.target.value;
-                  if (v === "") {
-                    setManualIndex(null);
-                    setManualIndexText("");
-                  } else {
-                    const n = parseInt(v);
-                    if (!isNaN(n) && n >= 5 && n <= MAX_INDEX) {
-                      setManualIndex(n);
-                      setManualIndexText(n.toString());
-                    } else if (!isNaN(n) && n < 5) {
-                      setManualIndex(5);
-                      setManualIndexText("5");
-                    } else if (!isNaN(n) && n > MAX_INDEX) {
-                      setManualIndex(MAX_INDEX);
-                      setManualIndexText(MAX_INDEX.toString());
-                    } else {
-                      setManualIndex(null);
-                      setManualIndexText("");
-                    }
-                  }
-                }}
-                style={{ ...inpS, width: 70, padding: "6px 8px", fontSize: 13 }}
-              />
-              <span style={{ fontSize: 11, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>" index</span>
-              {manualIndex !== null && (
-                <button
-                  onClick={() => { setManualIndex(null); setManualIndexText(""); }}
-                  style={{ fontSize: 9, padding: "4px 8px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 3, cursor: "pointer", fontFamily: "'DM Mono', monospace" }}>
-                  Clear
-                </button>
+            {/* Desktop right results */}
+            <div style={{flex:1,overflowY:"auto",background:"var(--bg0)",padding:"16px 20px"}}>
+              {!layout ? (
+                <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"var(--text3)"}}>
+                  <div style={{fontSize:48,opacity:0.15}}>⬡</div>
+                  <div style={{fontFamily:"'Orbitron',monospace",fontSize:10,letterSpacing:"0.25em",textTransform:"uppercase"}}>Enter Part Dimensions</div>
+                </div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:14}}>
+
+                  {/* Top LED row */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}} className="panel-anim">
+                    <LEDReadout label="Cavities"  value={layout.cavities}               color="var(--cyan)"  large/>
+                    <LEDReadout label="Index"     value={layout.usedIndex.toFixed(3)}  unit={`"`} color="var(--cyan)"  large/>
+                    <LEDReadout label="C/C Horiz" value={layout.ctcX.toFixed(4)}        unit={`"`} color="var(--green)"/>
+                    <LEDReadout label="C/C Vert"  value={layout.ctcY.toFixed(4)}        unit={`"`} color="var(--green)"/>
+                  </div>
+
+                  {/* Middle: preview + utilization */}
+                  <div style={{display:"flex",gap:14,flexWrap:"nowrap",alignItems:"flex-start"}}>
+                    {/* Layout preview */}
+                    <div style={{...cardStyle("var(--cyan-dim)"),flexShrink:0,cursor:"pointer",transition:"border-color 0.2s,box-shadow 0.2s",padding:0,overflow:"hidden"}}
+                      className="layout-thumb" onClick={()=>setShowModal(true)}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px"}}>
+                        <span style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--cyan)",textTransform:"uppercase"}}>Layout Preview</span>
+                        <span style={{fontSize:10,color:"var(--text2)"}}>⊞ click to expand</span>
+                      </div>
+                      <LayoutSVG layout={layout} scale={thumbScale}/>
+                      <div style={{padding:"6px 12px",fontSize:9,color:"var(--text3)",textAlign:"center",fontFamily:"'JetBrains Mono',monospace"}}>
+                        {layout.across} across × {layout.down} down · H:{(layout.spH??layout.sp).toFixed(3)}" V:{(layout.spV??layout.sp).toFixed(3)}" · {rotated ? "▯ rotated" : "▭ normal"}
+                      </div>
+                    </div>
+
+                    {/* Utilization + weight */}
+                    {stats&&(
+                      <div style={{...cardStyle("var(--green-dim)"),flex:1,minWidth:220}}>
+                        <div style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--green)",textTransform:"uppercase",marginBottom:12}}>Material Utilization</div>
+                        <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+                          <UtilGauge pct={stats.utilPct}/>
+                          <div style={{flex:1,minWidth:140}}>
+                            <WeightBar label="PARTS WEIGHT" value={stats.partsLbs} total={stats.sheetLbs} color="var(--green)"/>
+                            <WeightBar label="SCRAP WEIGHT" value={stats.scrapLbs} total={stats.sheetLbs} color="var(--amber)"/>
+                            <WeightBar label="SHEET TOTAL"  value={stats.sheetLbs} total={stats.sheetLbs} color="var(--cyan-dim)"/>
+                          </div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:12}}>
+                          {[["Sheet",stats.sheetArea,"var(--cyan-dim)"],["Parts",stats.partsArea,"var(--green)"],["Scrap",stats.scrapArea,"var(--amber)"]].map(([l,v,c])=>(
+                            <div key={l} style={{background:"var(--bg0)",borderRadius:5,padding:"8px 10px",border:`1px solid ${c}33`}}>
+                              <div style={{fontSize:8,color:"var(--text2)",letterSpacing:"0.1em",marginBottom:3,fontFamily:"'Orbitron',monospace",textTransform:"uppercase"}}>{l}</div>
+                              <div style={{fontSize:13,color:c,fontFamily:"'JetBrains Mono',monospace",fontWeight:500}}>{v.toFixed(1)}</div>
+                              <div style={{fontSize:9,color:"var(--text2)"}}>in²</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Cost panel */}
+                  {stats&&(
+                    <div style={{...cardStyle("var(--amber-dim)"),display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}} className="panel-anim">
+                      <div>
+                        <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:5}}>Material</div>
+                        <div style={{fontSize:13,color:"var(--text0)",fontFamily:"'JetBrains Mono',monospace"}}>{material.name}</div>
+                        <div style={{fontSize:11,color:"var(--text1)"}}>ρ = {material.density} g/cc</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:5}}>Gauge</div>
+                        <div style={{fontSize:13,color:"var(--text0)",fontFamily:"'JetBrains Mono',monospace"}}>{gauge.toFixed(3)}"</div>
+                        <div style={{fontSize:11,color:"var(--text1)"}}>{(gauge*1000).toFixed(0)} thou · {(gauge*25.4).toFixed(2)} mm</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:5}}>Price / lb</div>
+                        <div style={{fontSize:13,color:"var(--amber)",fontFamily:"'JetBrains Mono',monospace"}}>${stats.estPrice.toFixed(3)}</div>
+                        <div style={{fontSize:10,color:"var(--text2)"}}>{stats.pricePerLb?"entered":"estimated"}</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.12em",fontFamily:"'Orbitron',monospace",textTransform:"uppercase",marginBottom:5}}>Cost / Part</div>
+                        <div style={{fontSize:22,color:"var(--amber)",fontFamily:"'Orbitron',monospace",fontWeight:700,textShadow:"0 0 10px var(--amber)"}}>${stats.costPerPart.toFixed(4)}</div>
+                        <div style={{fontSize:10,color:"var(--text2)"}}>sheet: ${stats.sheetCost.toFixed(3)}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Detail table */}
+                  <div style={cardStyle()} className="panel-anim">
+                    <div style={{fontFamily:"'Orbitron',monospace",fontSize:9,letterSpacing:"0.15em",color:"var(--text2)",textTransform:"uppercase",marginBottom:10}}>Layout Details</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 32px"}}>
+                      {[
+                        ["Mold Width",     `${layout.formW}"`,                              false],
+                        ["Sheet Width",    `${(layout.formW+2*CHAIN_EACH).toFixed(3)}" (w/ chains)`,false],
+                        ["Index Length",   `${layout.usedIndex.toFixed(4)}"`,               true],
+                        ["Across × Down",  `${layout.across} × ${layout.down}`,             true],
+                        ["Max Cavities",   `${layout.maxCavities}`,                         false],
+                        ["C/C Horizontal", `${layout.ctcX.toFixed(4)}"`,                    false],
+                        ["C/C Vertical",   `${layout.ctcY.toFixed(4)}"`,                    false],
+                        ["Spacing H",      `${(layout.spH??layout.sp).toFixed(4)}"`,         false],
+                        ["Spacing V",      `${(layout.spV??layout.sp).toFixed(4)}"`,         false],
+                        ["Left Margin",    `${layout.marginLeft.toFixed(4)}"`,              false],
+                        ["Right Margin",   `${layout.marginRight.toFixed(4)}"`,             false],
+                      ].map(([l,v,hi])=>(
+                        <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid var(--bg3)"}}>
+                          <span style={{color:"var(--text2)",fontSize:11}}>{l}</span>
+                          <span style={{color:hi?"var(--cyan)":"var(--text0)",fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:hi?600:400}}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
               )}
-            </div>
-
-            <SL>Override Quantity</SL>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-              <div>
-                <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>Across (web)</div>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    placeholder="Auto"
-                    value={forceAcross || ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === "") setForceAcross(null);
-                      else {
-                        const n = parseInt(v);
-                        if (!isNaN(n) && n >= 1) setForceAcross(n);
-                      }
-                    }}
-                    step={1}
-                    min={1}
-                    style={{ ...inpS, width: 60, padding: "4px 6px", fontSize: 12 }}
-                  />
-                  {forceAcross !== null && (
-                    <button
-                      onClick={() => setForceAcross(null)}
-                      style={{ fontSize: 8, padding: "2px 4px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 2, cursor: "pointer" }}>
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>Down (index)</div>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    placeholder="Auto"
-                    value={forceDown || ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === "") setForceDown(null);
-                      else {
-                        const n = parseInt(v);
-                        if (!isNaN(n) && n >= 1) setForceDown(n);
-                      }
-                    }}
-                    step={1}
-                    min={1}
-                    style={{ ...inpS, width: 60, padding: "4px 6px", fontSize: 12 }}
-                  />
-                  {forceDown !== null && (
-                    <button
-                      onClick={() => setForceDown(null)}
-                      style={{ fontSize: 8, padding: "2px 4px", background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", borderRadius: 2, cursor: "pointer" }}>
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-            {(forceAcross !== null || forceDown !== null) && (
-              <div style={{ fontSize: 9, color: "#f59e0b", fontFamily: "'DM Mono', monospace", marginBottom: 10, padding: "4px 8px", background: "#422006", borderRadius: 4, border: "1px solid #854d0e" }}>
-                Quantities overridden — spacing distributed to edges
-              </div>
-            )}
-
-            <div style={{ fontSize: 9, color: "#475569", fontFamily: "'DM Mono', monospace", marginBottom: 10, padding: "6px 8px", background: "#111827", borderRadius: 4, border: "1px solid #1e293b" }}>
-              <div>Internal Spacing: {(ori.actualSpacingW || ori.spacing).toFixed(3)}" (1x z)</div>
-              <div>Edge Margin: {(ori.edgeMarginW || layout.edgeMin).toFixed(3)}" web / {(ori.edgeMarginL || layout.edgeMin).toFixed(3)}" index {edgeMode === "auto" ? "(1x z + extra)" : "(manual)"}</div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
-              <div>
-                <SL>Material</SL>
-                <select value={materialIdx} onChange={e => { const i = parseInt(e.target.value); setMaterialIdx(i); setCostPerLb(MATERIALS[i].price.toString()); }} style={selS}>
-                  {MATERIALS.map((m, i) => <option key={m.name} value={i}>{m.name} ({m.density})</option>)}
-                </select>
-              </div>
-              <div>
-                <SL>Gauge</SL>
-                <input type="text" value={gaugeText} onChange={handleGaugeInput} style={{ ...inpS, marginBottom: 5 }} />
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 10 }}>
-              {COMMON_GAUGES.map(g => (
-                <button key={g} onClick={() => handleGaugePreset(g)} style={{ padding: "4px 7px", fontSize: 10, fontFamily: "'DM Mono', monospace", background: Math.abs(gauge - g) < 0.0001 ? "#334155" : "#1e293b", border: `1px solid ${Math.abs(gauge - g) < 0.0001 ? "#4EA8DE" : "#334155"}`, color: Math.abs(gauge - g) < 0.0001 ? "#4EA8DE" : "#94a3b8", borderRadius: 3, cursor: "pointer" }}>
-                  .{String(g).split(".")[1]}
-                </button>
-              ))}
-            </div>
-
-            <SL>Mold Width (Web)</SL>
-            <select
-              value={moldWidth}
-              onChange={e => setMoldWidth(parseInt(e.target.value))}
-              style={{ ...selS, marginBottom: 10 }}>
-              {MOLD_WIDTHS.map(w => (
-                <option key={w} value={w}>{w}"</option>
-              ))}
-            </select>
-
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr", gap: isMobile ? 12 : 0 }}>
-              <div>
-                <SL>Orientation</SL>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-                  {[
-                    { key: "best", label: `Best — ${Math.max(layout.orientationA.count, layout.orientationB.count)} cav` },
-                    { key: "A", label: `As entered — ${layout.orientationA.count}` },
-                    { key: "B", label: `Rotated 90° — ${layout.orientationB.count}` },
-                  ].map(o => (
-                    <button key={o.key} onClick={() => setSelectedOri(o.key)} style={{ padding: "6px 9px", fontSize: 10.5, textAlign: "left", fontFamily: "'DM Mono', monospace", background: selectedOri === o.key ? "#1e3a5f" : "#111827", border: `1px solid ${selectedOri === o.key ? "#4EA8DE" : "#1e293b"}`, color: selectedOri === o.key ? "#93c5fd" : "#94a3b8", borderRadius: 4, cursor: "pointer" }}>
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <SL>Material Cost (opt.)</SL>
-                <div style={{ position: "relative", marginBottom: 10 }}>
-                  <span style={{ position: "absolute", left: 9, top: 8, color: "#64748b", fontSize: 13, fontFamily: "'DM Mono', monospace" }}>$</span>
-                  <input type="number" placeholder="per lb" value={costPerLb} onChange={e => setCostPerLb(e.target.value)} style={{ ...inpS, paddingLeft: 20 }} step={0.01} min={0} />
-                </div>
-                <FredPanel />
-              </div>
             </div>
           </div>
         )}
-
-        {/* RESULTS PANEL */}
-        <div style={{ flex: 1, padding: isMobile ? "10px 12px" : "14px 18px", minWidth: 0 }}>
-          {/* Stats */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(auto-fit, minmax(105px, 1fr))", gap: 6, marginBottom: 10 }}>
-            <StatCard label="Cavities" value={ori.count} unit="pcs" accent={material.color} />
-            <StatCard label="Index" value={ori.usedIndex} unit='"' />
-            <StatCard label="Util" value={utilization.toFixed(1)} unit="%" accent={utilization > 60 ? "#22c55e" : utilization > 40 ? "#eab308" : "#ef4444"} />
-            <StatCard label="Sheet" value={sheetWeight.toFixed(3)} unit="lb" />
-            <StatCard label="Scrap" value={scrapWeight.toFixed(3)} unit="lb" />
-            {hasCost && <StatCard label="$/Part" value={costPerPart.toFixed(4)} unit="" accent="#22c55e" />}
-          </div>
-
-          {/* Cost Summary */}
-          <CostSummary hasCost={hasCost} costLb={costLb} sheetWeight={sheetWeight} scrapWeight={scrapWeight} costPerPart={costPerPart} count={ori.count} />
-
-          {/* Layout SVG */}
-          <div style={{ background: "#0c1222", border: previewMaxIndex !== null ? "1px solid #4EA8DE" : "1px solid #1e293b", borderRadius: 8, padding: isMobile ? 8 : 12, marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>{ori.across}×{ori.down} — {activeOri === "A" ? "as entered" : "rotated"} — centered on {moldWidth}" web</span>
-              {previewMaxIndex !== null && (
-                <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1e3a5f", color: "#4EA8DE", border: "1px solid #334155" }}>
-                  PREVIEW: {ori.usedIndex}" INDEX
-                </span>
-              )}
-            </div>
-            <LayoutSVG layout={layout} orientation={activeOri} moldWidth={moldWidth} materialColor={material.color} />
-          </div>
-
-          {/* Detail Table */}
-          <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Mono', monospace", fontSize: isMobile ? 10.5 : 11 }}>
-              <thead><tr style={{ background: "#1e293b" }}><th style={thS}>Parameter</th><th style={{ ...thS, textAlign: "right" }}>Value</th></tr></thead>
-              <tbody>
-                <DR l="Part Cut Size" v={`${ori.cellW}" × ${ori.cellL}"`} />
-                <DR l="Z-Height" v={`${zHeight}"`} />
-                <DR l="Internal Spacing" v={`${(ori.actualSpacingW || ori.spacing).toFixed(3)}" (1x z)`} />
-                <DR l="Edge Margin (Web)" v={`${(ori.edgeMarginW || layout.edgeMin).toFixed(3)}"`} />
-                <DR l="Edge Margin (Index)" v={`${(ori.edgeMarginL || layout.edgeMin).toFixed(3)}"`} />
-                <DR l="Min Mold Plate" v={`${ori.moldPlateW.toFixed(3)}" × ${ori.moldPlateL.toFixed(3)}"`} />
-                <DR l="Web (Mold Width)" v={`${moldWidth}"`} />
-                <DR l="Sheet Width (w/ Chains)" v={`${totalSheetW}"`} />
-                <DR l="Index Length" v={`${ori.usedIndex}" / ${MAX_INDEX}" max`} />
-                <DR l="Cavities" v={`${ori.count} (${ori.across} × ${ori.down})`} h />
-                <DR l="Material" v={`${material.name} @ .${String(gauge).split(".")[1]}" ga.`} />
-                <DR /><DR l="Forming Area" v={`${formingArea.toFixed(2)} sq in`} />
-                <DR l="Total Parts Area" v={`${totalPartsArea.toFixed(2)} sq in`} />
-                <DR l="Scrap Area" v={`${scrapArea.toFixed(2)} sq in`} />
-                <DR l="Utilization" v={`${utilization.toFixed(1)}%`} h />
-                <DR /><DR l="Sheet Weight" v={`${sheetWeight.toFixed(4)} lbs`} />
-                <DR l="Parts Weight" v={`${partsWeight.toFixed(4)} lbs`} />
-                <DR l="Scrap Weight" v={`${scrapWeight.toFixed(4)} lbs`} />
-                {hasCost && <><DR /><DR l="Material $/lb" v={`$${costLb.toFixed(2)}`} /><DR l="Sheet Cost" v={`$${sheetCost.toFixed(4)}`} /><DR l="Material $/Part" v={`$${costPerPart.toFixed(4)}`} h /></>}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Index Comparison */}
-          {indexComparisons.length > 1 && (
-            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
-              <div
-                style={{ background: "#1e293b", padding: "6px 10px", fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
-                <span
-                  onClick={() => setShowIndexCompare(!showIndexCompare)}
-                  style={{ color: "#93c5fd", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
-                  <span>{showIndexCompare ? "▼" : "▶"}</span>
-                  Compare Index Lengths
-                  <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1e3a5f", color: "#4EA8DE", border: "1px solid #334155" }}>
-                    {indexComparisons.length} OPTIONS
-                  </span>
-                </span>
-                {previewMaxIndex !== null && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setPreviewMaxIndex(null); }}
-                    style={{ fontSize: 8, fontWeight: 600, padding: "2px 6px", borderRadius: 3, background: "#7f1d1d", color: "#fca5a5", border: "1px solid #991b1b", cursor: "pointer", fontFamily: "'DM Mono', monospace" }}>
-                    ✕ RESET
-                  </button>
-                )}
-              </div>
-              {showIndexCompare && (
-                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Mono', monospace", fontSize: isMobile ? 10 : 10.5 }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid #1e293b" }}>
-                      <th style={{ padding: "5px 10px", textAlign: "left", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Index</th>
-                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Cavs</th>
-                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Layout</th>
-                      <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Sheet lb</th>
-                      <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Util %</th>
-                      {hasCost && <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>$/Part</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {indexComparisons.map((c, i) => {
-                      const isDefault = c.isCurrent;
-                      const isSelected = previewMaxIndex === c.maxIndex || (previewMaxIndex === null && isDefault);
-                      const isBest = i === 0 || c.utilization === indexComparisons[0].utilization;
-                      const cavDiff = c.count - indexComparisons[0].count;
-                      return (
-                        <tr key={c.maxIndex}
-                          onClick={() => setPreviewMaxIndex(isDefault && previewMaxIndex === null ? null : c.maxIndex)}
-                          style={{
-                            borderBottom: "1px solid #1e293b",
-                            background: isSelected ? "#1e3a5f44" : "transparent",
-                            cursor: "pointer",
-                          }}>
-                          <td style={{ padding: "5px 10px", color: isSelected ? "#93c5fd" : "#cbd5e1" }}>
-                            {c.usedIndex}"
-                            {isSelected && <span style={{ marginLeft: 4, fontSize: 8, color: "#4EA8DE", fontWeight: 700 }}>● VIEWING</span>}
-                            {!isSelected && isDefault && <span style={{ marginLeft: 4, fontSize: 8, color: "#64748b" }}>DEFAULT</span>}
-                          </td>
-                          <td style={{ padding: "5px 10px", textAlign: "center", color: isSelected ? "#e2e8f0" : "#cbd5e1", fontWeight: isSelected ? 600 : 400 }}>
-                            {c.count}
-                            {!isDefault && cavDiff !== 0 && (
-                              <span style={{ marginLeft: 3, fontSize: 9, color: cavDiff > 0 ? "#22c55e" : "#ef4444" }}>
-                                ({cavDiff > 0 ? "+" : ""}{cavDiff})
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ padding: "5px 10px", textAlign: "center", color: "#94a3b8" }}>{c.across}×{c.down}</td>
-                          <td style={{ padding: "5px 10px", textAlign: "center", color: "#94a3b8" }}>{c.sheetWeight.toFixed(3)}</td>
-                          <td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 600, color: c.utilization > 60 ? "#22c55e" : c.utilization > 40 ? "#eab308" : "#ef4444" }}>{c.utilization.toFixed(1)}%</td>
-                          {hasCost && (
-                            <td style={{ padding: "5px 10px", textAlign: "right", color: isBest && c.costPerPart <= indexComparisons[0].costPerPart ? "#22c55e" : "#cbd5e1" }}>
-                              ${c.costPerPart.toFixed(4)}
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-
-          {/* Optimal Mold Suggestion */}
-          {layout.suggestions.length > 0 && (
-            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
-              <div style={{ background: "#1e293b", padding: "6px 10px", fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 6 }}>
-                Optimal Mold Width Suggestions
-                <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#064e3b", color: "#34d399", border: "1px solid #065f46" }}>AUTO</span>
-              </div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Mono', monospace", fontSize: isMobile ? 10 : 10.5 }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid #1e293b" }}>
-                    <th style={{ padding: "5px 10px", textAlign: "left", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Web</th>
-                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Cavs</th>
-                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Spacing</th>
-                    <th style={{ padding: "5px 10px", textAlign: "center", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Index</th>
-                    <th style={{ padding: "5px 10px", textAlign: "right", color: "#64748b", fontSize: 9, textTransform: "uppercase" }}>Util %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {layout.suggestions.map((s, i) => {
-                    const isCurrent = s.moldWidth === moldWidth;
-                    const isBest = i === 0;
-                    return (
-                      <tr key={s.moldWidth}
-                        onClick={() => setMoldWidth(s.moldWidth)}
-                        style={{
-                          borderBottom: "1px solid #1e293b",
-                          cursor: "pointer",
-                          background: isCurrent ? "#1e3a5f22" : "transparent",
-                        }}>
-                        <td style={{ padding: "5px 10px", color: isCurrent ? "#93c5fd" : "#cbd5e1" }}>
-                          {s.moldWidth}"
-                          {isBest && <span style={{ marginLeft: 4, fontSize: 8, color: "#22c55e", fontWeight: 700 }}>★ BEST</span>}
-                          {isCurrent && !isBest && <span style={{ marginLeft: 4, fontSize: 8, color: "#4EA8DE" }}>●</span>}
-                        </td>
-                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.count} ({s.across}×{s.down})</td>
-                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.spacing.toFixed(3)}"</td>
-                        <td style={{ padding: "5px 10px", textAlign: "center", color: "#cbd5e1" }}>{s.usedIndex}"</td>
-                        <td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 600, color: s.utilization > 60 ? "#22c55e" : s.utilization > 40 ? "#eab308" : "#ef4444" }}>{s.utilization.toFixed(1)}%</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Footer */}
-          <div style={{ textAlign: "center", padding: "16px 0 8px", fontSize: 9, color: "#334155", fontFamily: "'DM Mono', monospace" }}>
-            Louis A. Nelson, Inc. — Thermoform Layout Optimizer v2.4
-          </div>
-        </div>
       </div>
-    </div>
+    </>
   );
 }
-
-function SL({ children }) { return <div style={{ fontSize: 9.5, fontWeight: 600, color: "#64748b", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4, marginTop: 2 }}>{children}</div>; }
-function IF({ label, value, onChange, suffix = "", step = 0.125, min = 0 }) {
-  return <div style={{ marginBottom: 3 }}><div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>{label}</div><div style={{ position: "relative" }}><input type="number" value={value} onChange={e => onChange(parseFloat(e.target.value) || 0)} step={step} min={min} style={inpS} />{suffix && <span style={{ position: "absolute", right: 9, top: 8, color: "#475569", fontSize: 12, fontFamily: "'DM Mono', monospace" }}>{suffix}</span>}</div></div>;
-}
-function DR({ l, v, h }) {
-  if (!l && !v) return <tr><td colSpan={2} style={{ height: 3, borderBottom: "1px solid #1e293b" }}></td></tr>;
-  return <tr style={{ borderBottom: "1px solid #1e293b" }}><td style={{ padding: "5px 10px", color: h ? "#93c5fd" : "#94a3b8" }}>{l}</td><td style={{ padding: "5px 10px", textAlign: "right", color: h ? "#e2e8f0" : "#cbd5e1", fontWeight: h ? 600 : 400 }}>{v}</td></tr>;
-}
-
-const inpS = { width: "100%", padding: "8px 10px", fontSize: 14, fontFamily: "'DM Mono', monospace", background: "#111827", border: "1px solid #334155", color: "#e2e8f0", borderRadius: 4, outline: "none", boxSizing: "border-box" };
-const selS = { ...inpS, marginBottom: 10, cursor: "pointer", appearance: "auto" };
-const thS = { padding: "6px 10px", textAlign: "left", color: "#94a3b8", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 1 };
